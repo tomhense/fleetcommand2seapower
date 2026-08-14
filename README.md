@@ -8,6 +8,7 @@ This tool parses Fleet Commands `.scs` & .`scm` files into a far easier to work 
 Please note that because of copyright, this repo does not contain the original Fleet Command files. Please aquire a copy of Fleet Command yourself.
 
 ## website
+![](https://raw.githubusercontent.com/tomhense/fleetcommand2seapower/refs/heads/master/screenshots/website_example_1.jpg)
 This repo also contains a small website to visualize the fleet command scenarios on a map. Simply open the `index.html` file in your browser and drag one of the `.json` files produced by the scs_converter into it.
 
 ## seapower_generator.py
