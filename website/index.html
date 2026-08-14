@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SCS Scenario Map</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="eyebrow">Fleet Command</span>
+        <h1>Scenario map</h1>
+        <p>Drop one or more converted JSON scenarios onto the map.</p>
+      </div>
+
+      <label class="dropzone" id="dropzone" for="file-input">
+        <input id="file-input" type="file" accept=".json,application/json" multiple>
+        <span class="drop-icon">↥</span>
+        <strong>Drop JSON files here</strong>
+        <span>or click to browse</span>
+      </label>
+
+      <section class="panel">
+        <div class="panel-heading"><h2>Scenarios</h2><button id="clear-button" class="text-button" type="button">Clear</button></div>
+        <div id="scenario-list" class="scenario-list"><p class="muted">No scenarios loaded.</p></div>
+      </section>
+
+      <section class="panel">
+        <h2>Filters</h2>
+        <label class="filter-label">Unit type<select id="filter-type"><option value="all">All unit types</option><option value="aircraft">Aircraft</option><option value="vessel">Vessels</option><option value="land">Land units</option><option value="airbase">Air stations</option></select></label>
+        <label class="filter-label">Country<select id="filter-country"><option value="all">All countries</option></select></label>
+        <label class="filter-label">Class<select id="filter-class"><option value="all">All classes</option></select></label>
+      </section>
+
+      <section class="panel">
+        <h2>Selected unit</h2>
+        <div id="unit-details" class="unit-details empty">Click a unit on the map.</div>
+      </section>
+
+      <section class="panel tasking-panel">
+        <h2>Tasking</h2>
+        <div id="tasking-list"><p class="muted">Tasking text appears here after loading a scenario.</p></div>
+      </section>
+
+      <section class="panel">
+        <h2>Legend</h2>
+        <button class="legend-row legend-toggle active" data-toggle="friendly" aria-pressed="true" type="button"><span class="swatch friendly"></span> Friendly</button>
+        <button class="legend-row legend-toggle active" data-toggle="enemy" aria-pressed="true" type="button"><span class="swatch enemy"></span> Enemy</button>
+        <button class="legend-row legend-toggle active" data-toggle="neutral" aria-pressed="true" type="button"><span class="swatch neutral"></span> Neutral</button>
+        <button class="legend-row legend-toggle active" data-toggle="waypoints" aria-pressed="true" type="button"><span class="waypoint-line"><i></i></span> Waypoint route / node</button>
+        <button class="legend-row legend-toggle active" data-toggle="formations" aria-pressed="true" type="button"><span class="formation-line"></span> Formation member → leader</button>
+        <button class="legend-row legend-toggle active" data-toggle="corridors" aria-pressed="true" type="button"><span class="corridor-line"></span> Air corridor</button>
+        <button class="legend-row legend-toggle active" data-toggle="zones" aria-pressed="true" type="button"><span class="zone-line"></span> Boxes / zones</button>
+        <button class="legend-row legend-toggle active" data-toggle="goals" aria-pressed="true" type="button"><span class="goal-key">!</span> Trigger / objective</button>
+        <div class="symbol-key">NATO-style unit symbols</div>
+        <div id="symbol-legend" class="symbol-grid"></div>
+      </section>
+
+      <section class="panel stats" id="stats">
+        <h2>Visible objects</h2>
+        <div class="stat-grid"><span>Units</span><strong id="unit-count">0</strong><span>Corridors</span><strong id="corridor-count">0</strong><span>Triggers</span><strong id="goal-count">0</strong></div>
+      </section>
+      <p class="footer-note">Coordinates are read from each object's converted <code>position</code> field.</p>
+    </aside>
+    <section class="map-wrap">
+      <div id="map" aria-label="Scenario world map"></div>
+      <div id="coordinate-readout" class="coordinate-readout">—</div>
+      <div id="map-message" class="map-message">Load a scenario JSON to begin.</div>
+    </section>
+  </main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

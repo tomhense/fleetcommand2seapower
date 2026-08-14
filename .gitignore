@@ -1,0 +1,6 @@
+SeaPower_Missions_Generated/*
+SeaPower_StreamingAssets
+FleetCommand_scenarios/*
+FleetCommand_scenarios_converted
+__pycache__
+.mypy_cache

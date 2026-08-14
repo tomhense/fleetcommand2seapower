@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152" height="152" viewBox="24 24 152 152">
+<path d="M 100,28 L172,100 100,172 28,100 100,28 Z" fill="rgb(255, 128, 128)" stroke="rgb(0, 0, 0)" stroke-width="4.0" stroke-linecap="round" />
+<path d="M90,120 L90,90 C90,80 110,80 110,90 L110,120 M100,120 L100,80" fill="none" stroke="rgb(0, 0, 0)" stroke-width="4.0" stroke-linecap="round" />
+<text x="100" y="77" font-size="30" text-anchor="middle" fill="rgb(0, 0, 0)" stroke="none" stroke-linecap="round">N</text>
+</svg>
