@@ -92,6 +92,9 @@
     const exactType = [item.entity_type, item.class].filter(Boolean).join(' · ') || kind;
     const country = item.alliance_country || item.country || (item.alliance_countries || []).join(', ') || 'Unknown';
     const alliance = item.alliance_id ?? item.alliance ?? '—';
+    const probability = item.prob;
+    const probabilityLine = probability !== null && probability !== undefined && probability !== ''
+      ? `<br>Probability: ${escapeHtml(String(probability))}%` : '';
     const aircraft = (item.aircraft || []).map(air => {
       const name = air.variant || air.name || 'Aircraft';
       const qty = air.quantity === null || air.quantity === undefined ? '' : ` × ${air.quantity}`;
@@ -100,7 +103,7 @@
     });
     const aircraftBlock = aircraft.length
       ? `<div class="tooltip-aircraft"><b>Aircraft</b>${aircraft.map(air => `<div>${escapeHtml(air)}</div>`).join('')}</div>` : '';
-    return `<div class="unit-tooltip"><strong>${escapeHtml(title)}</strong><span>Type: ${escapeHtml(exactType)}<br>Country: ${escapeHtml(country)}<br>${escapeHtml(color)} · alliance ${escapeHtml(String(alliance))}<br>${escapeHtml(filename)}</span>${aircraftBlock}</div>`;
+    return `<div class="unit-tooltip"><strong>${escapeHtml(title)}</strong><span>Type: ${escapeHtml(exactType)}<br>Country: ${escapeHtml(country)}${probabilityLine}<br>${escapeHtml(color)} · alliance ${escapeHtml(String(alliance))}<br>${escapeHtml(filename)}</span>${aircraftBlock}</div>`;
   }
 
   function showUnitDetails(item, kind, color, filename) {
