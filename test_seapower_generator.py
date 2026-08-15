@@ -105,6 +105,26 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("civ_c340=Default,0", rendered)
         self.assertNotIn("usn_f-14a=Default,0", rendered)
 
+    def test_autodetect_entities_are_revealed_at_mission_start(self) -> None:
+        data = {
+            "metadata": {"latlong": [0, 0], "month": 1, "timeofday": 12},
+            "land_units": [{
+                "name": "SAM", "class": "", "alliance_role": "enemy", "autodetect": True,
+                "position": {"latitude": 1, "longitude": 1},
+            }],
+        }
+        rendered = Generator(data, self.resolver).render()
+        self.assertIn("NumberOfTriggers=1", rendered)
+        self.assertIn("Name=Fleet Command autodetect", rendered)
+        self.assertIn("Action_Units=Taskforce2LandUnit1", rendered)
+        self.assertIn("Action_UnitRevealToTaskforce=Taskforce1|Identify", rendered)
+
+    def test_parser_normalizes_autodetect_to_boolean(self) -> None:
+        data = parse(ROOT / "FleetCommand_scenarios" / "Single06.scs")
+        values = [item["autodetect"] for item in data["land_units"] if "autodetect" in item]
+        self.assertIn(True, values)
+        self.assertIn(False, values)
+
     def test_nearby_buildings_and_sam_sites_are_merged(self) -> None:
         data = {
             "metadata": {"latlong": [0, 0], "month": 1, "timeofday": 12},

@@ -178,6 +178,9 @@ def parse_record(lines: list[str], index: int, converter: Converter, kind: str) 
             corridor, index = parse_corridor(lines, index, converter)
             record.setdefault("air_corridors", []).append(corridor)
             continue
+        elif key == "AUTODETECT" and len(tokens) > 1:
+            value = atom(tokens[1])
+            record["autodetect"] = bool(value) if isinstance(value, (int, float)) else None
         elif len(tokens) > 1:
             value = [atom(v) for v in tokens[1:]]
             record[key.lower()] = one_or_many(value)

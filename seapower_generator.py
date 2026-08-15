@@ -210,6 +210,15 @@ class Generator:
         if role in {"neutral", "unknown"}: return "neutral"
         return "friendly"
 
+    def autodetect(self, item: dict[str, Any]) -> bool:
+        """Return Fleet Command's automatic initial-reveal flag."""
+        value = item.get("autodetect")
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
     def category(self, item: dict[str, Any], source: str) -> str:
         if source == "aircraft":
             text = norm(f"{item.get('name')} {item.get('class')}")
@@ -544,7 +553,7 @@ class Generator:
         section = f"[NeutralAircraft{index}]\nType={definition}\nSquadronReference=Default\nMissionType=NoMission\nCrewSkill=Trained\nRelativePositionInNM={self.pos(item['position'])}\nTelegraph={max(2, min(5, round(speed / 50)))}\nHeading={heading:.2f}\nWaypoints={self.pos(item['waypoints'][0])}\n# FleetCommandAirCorridor={corridor.get('name') or 'unnamed'}"
         return section
 
-    def trigger_sections(self, units: dict[str, str]) -> tuple[list[str], list[str]]:
+    def trigger_sections(self, units: dict[str, str], autodetect_units: list[str] | None = None) -> tuple[list[str], list[str]]:
         triggers, objectives = [], []
         goals = self.data.get("triggers_goals", [])
         children_by_parent: dict[int, list[dict[str, Any]]] = {}
@@ -619,6 +628,19 @@ class Generator:
                 "Action_Taskforce1_Intel=Taskforce1ScenarioIntel",
                 "ConditionsCompleted=<Condition1>",
             ]))
+        reveal_units = list(dict.fromkeys(autodetect_units or []))
+        reveal_start = len(goals) + (1 if intel and intel.lower() not in {"none", "none available", "not available", "n/a"} else 0) + 1
+        for offset, section in enumerate(reveal_units):
+            triggers.append("\n".join([
+                f"[Trigger{reveal_start + offset}]",
+                "Name=Fleet Command autodetect",
+                "Condition_Condition1_Type=Time",
+                "Condition_Condition1_Time=1",
+                f"Action_Units={section}",
+                "Action_UnitRevealToTaskforce=Taskforce1|Identify",
+                "Action_UnitRevealTime=-1",
+                "ConditionsCompleted=<Condition1>",
+            ]))
         return triggers, objectives
 
     def objective_labels(self) -> list[tuple[str, str]]:
@@ -670,6 +692,7 @@ class Generator:
                   "Taskforce1LandUnit": 0, "Taskforce2LandUnit": 0, "NeutralLandUnit": 0}
         group_refs: dict[str, dict[int, list[str]]] = {"friendly": {}, "enemy": {}, "neutral": {}}
         group_has_routes: dict[str, set[int]] = {"friendly": set(), "enemy": set(), "neutral": set()}
+        autodetect_units: list[str] = []
         random_groups = self.probability_groups("vessels")
         random_group_members = {id(item) for members in random_groups.values() for item in members}
         random_group_emitted: set[tuple[str, int]] = set()
@@ -699,6 +722,8 @@ class Generator:
                     for candidate_item in candidates:
                         if candidate_item.get("uniquename"):
                             units[str(candidate_item["uniquename"])] = section
+                    if role != "friendly" and any(self.autodetect(candidate_item) for candidate_item in candidates):
+                        autodetect_units.append(section)
                     group_refs[role].setdefault(random_key[1], []).append(section)
                     blocks.extend(self.attached_aircraft(prefix, candidate, section, counts))
                     self.warn(f"group {random_key[1]} selected one reproducibly-random vessel at conversion time: {candidate.get('uniquename')!r}")
@@ -712,6 +737,8 @@ class Generator:
                     counts[key] += 1
                     block, section = result; blocks.append(block)
                     if item.get("uniquename"): units[str(item["uniquename"])] = section
+                    if role != "friendly" and self.autodetect(item):
+                        autodetect_units.append(section)
                     if isinstance(item.get("group"), (int, float)):
                         group_id = int(item["group"])
                         group_refs[role].setdefault(group_id, []).append(section)
@@ -749,6 +776,8 @@ class Generator:
                             refs.append(section)
                         if isinstance(member.get("waypoints"), list) and member.get("waypoints"):
                             group_has_routes[role].add(group_id)
+                if role != "friendly" and any(self.autodetect(member) for member in cluster):
+                    autodetect_units.append(section)
                 blocks.extend(self.attached_aircraft(prefix, item, section, counts))
         for corridor in self.data.get("air_corridors", []) if isinstance(self.data.get("air_corridors"), list) else []:
             attachments = corridor.get("aircraft") if isinstance(corridor, dict) else []
@@ -797,10 +826,10 @@ class Generator:
                     lines.append(f"{taskforce}_Formation{n}={','.join(refs)}|{label}|Vic|0.1|OverrideSpawnPositions")
         if self.data.get("formations"):
             self.warn("Fleet Command alliance declarations are not tactical Sea Power formations and were not copied")
-        trigger_count = len(self.data.get("triggers_goals", [])) + (1 if intel and intel.lower() not in {"none", "none available", "not available", "n/a"} else 0)
+        trigger_count = len(self.data.get("triggers_goals", [])) + (1 if intel and intel.lower() not in {"none", "none available", "not available", "n/a"} else 0) + len(set(autodetect_units))
         lines.append(f"NumberOfTriggers={trigger_count}")
         lines += ["", *blocks]
-        triggers, objectives = self.trigger_sections(units)
+        triggers, objectives = self.trigger_sections(units, autodetect_units)
         if triggers:
             # Keep the standard section marker used by Sea Power's mission
             # editor. It helps the editor classify the following [TriggerN]
