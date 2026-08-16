@@ -5,9 +5,30 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ..generator_utils import ini_text
+from ..generator_utils import ini_text, norm
 
 class ObjectiveMixin:
+    def goal_unit_type(self, goal: dict[str, Any]) -> str | None:
+        """Map Fleet Command's goal class/name filters to Sea Power's unit type."""
+        text = norm(" ".join(str(goal.get(key) or "") for key in ("class", "shipname", "tagname")))
+        if "helicopter" in text or " helo" in f" {text}":
+            return "Helicopter"
+        if "aircraft" in text or "fighter" in text or "bomber" in text:
+            return "Aircraft"
+        if "submarine" in text or " sub " in f" {text} ":
+            return "Submarine"
+        if "ship" in text or "vessel" in text:
+            return "Vessel"
+        return None
+
+    def target_position(self, uniquename: str) -> dict[str, Any] | None:
+        for source in ("vessels", "aircraft", "land_units"):
+            for item in self.data.get(source, []) if isinstance(self.data.get(source), list) else []:
+                if isinstance(item, dict) and str(item.get("uniquename") or "") == uniquename:
+                    position = item.get("position")
+                    return dict(position) if isinstance(position, dict) else None
+        return None
+
     def trigger_sections(self, units: dict[str, str], autodetect_units: list[str] | None = None) -> tuple[list[str], list[str]]:
         triggers, objectives = [], []
         goals = self.data.get("triggers_goals", [])
@@ -29,7 +50,8 @@ class ObjectiveMixin:
             objectives.append(f"{objective_id}={reward},{penalty},Complete,Main")
             target = str(goal.get("uniquename") or "")
             target_section = units.get(target)
-            goal_type = int(float(goal.get("goaltype") or 2))
+            goal_type_value = goal.get("goaltype")
+            goal_type = int(float(goal_type_value)) if goal_type_value is not None else 2
             goal_start = int(float(goal.get("starttime") or 0))
             time_goal = bool(re.search(r"\bend\s*mission\b|\bmission\s+over\b|\bquit\b|\bfail", name, re.IGNORECASE))
             all_enemy_aircraft = bool(re.search(r"hostile.*air|all.*air|air.*destroyed", name, re.IGNORECASE))
@@ -52,10 +74,26 @@ class ObjectiveMixin:
             elif goal_type == 3 and child_sections and re.search(r"special.*force|all.*(killed|destroyed)", name, re.IGNORECASE):
                 condition = f"Condition_Condition1_Units={','.join(child_sections)}"
                 ctype = "UnitDestroyed"
-            elif goal_type == 3 and goal.get("position"):
-                trigger_point = dict(goal.get("position"))
+            elif goal_type in {0, 3} and goal.get("position") and (goal_type == 3 or goal.get("class") or goal.get("shipname") or goal.get("tagname")):
+                trigger_point = self.target_position(target) or dict(goal.get("position"))
                 trigger_point["altitude"] = 0
-                condition = f"Condition_Condition1_PositionNM={self.pos(trigger_point)}\nCondition_Condition1_AreaRadiusNM=5"
+                filtered_unit_goal = goal_type == 0 or goal.get("class") or goal.get("shipname") or goal.get("tagname")
+                if filtered_unit_goal:
+                    player_units = sorted({section for section in units.values() if section.startswith("Taskforce1")
+                                           and ("Aircraft" in section or "Helicopter" in section)})
+                else:
+                    player_units = sorted({section for section in units.values() if section.startswith("Taskforce1")})
+                condition = (f"Condition_Condition1_PositionNM={self.pos(trigger_point)}\n"
+                             "Condition_Condition1_AreaRadiusNM=5\n"
+                             "Condition_Condition1_AreaDisplaySide=None")
+                if player_units and not filtered_unit_goal:
+                    condition += f"\nCondition_Condition1_Units={','.join(player_units)}"
+                if player_units:
+                    condition += "\nCondition_Condition1_MinimumUnits=1"
+                    unit_type = self.goal_unit_type(goal)
+                    if filtered_unit_goal and unit_type:
+                        condition += ("\nCondition_Condition1_Taskforce=Taskforce1"
+                                      f"\nCondition_Condition1_UnitType={unit_type}")
                 ctype = "UnitsInTheArea"
             elif target_section:
                 condition = f"Condition_Condition1_Units={target_section}"
@@ -69,7 +107,11 @@ class ObjectiveMixin:
             if goal_type == 3:
                 victory = "Taskforce1" if re.search(r"mission\s+over", name, re.IGNORECASE) else ("Taskforce2" if time_goal else "Taskforce1")
                 lines += ["Action_EndMission=True", f"Action_Victory={victory}"]
-            lines += [f"Condition_Condition1_Type={ctype}", condition, "ConditionsCompleted=<Condition1>"]
+            if ctype:
+                lines.append(f"Condition_Condition1_Type={ctype}")
+            condition_count = condition.count("_Type=") or 1
+            lines += [condition, "ConditionsCompleted=" + " AND ".join(
+                f"<Condition{number}>" for number in range(1, condition_count + 1))]
             triggers.append("\n".join(lines))
         intel = ini_text(self.data.get("metadata", {}).get("intelmessage"))
         if intel and intel.lower() not in {"none", "none available", "not available", "n/a"}:
@@ -110,4 +152,3 @@ class ObjectiveMixin:
             objective_names.add(objective_id)
             labels.append((objective_id, name))
         return labels
-

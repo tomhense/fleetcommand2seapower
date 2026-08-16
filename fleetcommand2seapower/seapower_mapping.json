@@ -183,7 +183,7 @@
     "Building5": ["tgt_industry_buildings_1"],
     "Armory": ["tgt_ammo_depot_small"],
     "Whouse": ["warehouses_1"],
-    "Hangar": ["airfield_small_1"],
+    "Hangar": ["tgt_industry_buildings_1"],
     "Hospital": ["civ_comm_buildings"],
     "TrainingFacility": ["civ_comm_buildings"],
     "DrugFactory": ["tgt_industry_buildings_1"],

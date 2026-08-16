@@ -10,6 +10,43 @@ from typing import Any
 from ..generator_utils import ini_text, norm, role_prefix
 
 class UnitMixin:
+    # Land definitions often have ground pads/selection visuals extending
+    # beyond their physical colliders.  Reserve extra space for those meshes.
+    LAND_GROUND_FOOTPRINT_FACTOR = 2.0
+
+    def goal_aircraft_matches(self, aircraft: dict[str, Any], goal: dict[str, Any]) -> bool:
+        filters = [str(goal.get(key) or "") for key in ("class", "shipname", "tagname")]
+        filters = [norm(value) for value in filters if norm(value)]
+        if not filters:
+            return False
+        aircraft_text = norm(f"{aircraft.get('name')} {aircraft.get('variant')} {aircraft.get('class')}")
+        compact = aircraft_text.replace(" ", "")
+        return all(all(part.replace(" ", "") in compact for part in filter_text.split()) for filter_text in filters)
+
+    def objective_aircraft(self) -> list[dict[str, Any]]:
+        """Expose embarked aircraft selected by Fleet Command goal filters."""
+        goals = [goal for goal in self.data.get("triggers_goals", [])
+                 if isinstance(goal, dict) and int(float(goal.get("goaltype") or 0)) in {0, 3}]
+        matches = [goal for goal in goals if goal.get("class") or goal.get("shipname") or goal.get("tagname")]
+        if not matches:
+            return []
+        output: list[dict[str, Any]] = []
+        existing = [item for item in self.data.get("aircraft", []) if isinstance(item, dict)]
+        for vessel in self.data.get("vessels", []) if isinstance(self.data.get("vessels"), list) else []:
+            if not isinstance(vessel, dict) or self.role(vessel) != "friendly":
+                continue
+            for attachment in vessel.get("aircraft", []) if isinstance(vessel.get("aircraft"), list) else []:
+                if not isinstance(attachment, dict) or not any(self.goal_aircraft_matches(attachment, goal) for goal in matches):
+                    continue
+                if any(self.goal_aircraft_matches(item, goal) for item in existing for goal in matches):
+                    continue
+                clone = dict(attachment)
+                clone.update({"alliance_role": "friendly", "country": attachment.get("country") or vessel.get("country"),
+                              "position": dict(vessel.get("position") or {}),
+                              "uniquename": f"FleetCommand objective aircraft {len(output) + 1}"})
+                output.append(clone)
+        return output
+
     def section(self, prefix: str, index: int, item: dict[str, Any], source: str,
                home_base: str | None = None, spawn_chance: float | None = None) -> tuple[str, str] | None:
         category = self.category(item, source)
@@ -264,6 +301,29 @@ class UnitMixin:
             return None
         match = re.search(r"(?ms)^\[coll_selection\]\s*(.*?)(?=^\[|\Z)", text)
         if not match:
+            # Some composite installations do not define a selection box.
+            # Use the outermost physical collider instead of treating them as
+            # zero-sized; this covers warehouse and airbase-style definitions.
+            collider_radii: list[float] = []
+            for collider in re.finditer(r"(?ms)^\[(coll_[^\]]+)\]\s*(.*?)(?=^\[|\Z)", text):
+                section = collider.group(2)
+                kind = re.search(r"(?m)^Collider=\s*(\w+)", section)
+                position = re.search(r"(?m)^Position=\s*([-+.0-9eE]+)\s*,\s*[-+.0-9eE]+\s*,\s*([-+.0-9eE]+)", section)
+                scale = re.search(r"(?m)^Scale=\s*([-+.0-9eE]+)\s*,\s*[-+.0-9eE]+\s*,\s*([-+.0-9eE]+)", section)
+                if not kind or not position or not scale:
+                    continue
+                try:
+                    offset = math.hypot(float(position.group(1)), float(position.group(2)))
+                    dimensions = (float(scale.group(1)), float(scale.group(2)))
+                except ValueError:
+                    continue
+                if kind.group(1).lower() == "sphere":
+                    radius = max(abs(dimensions[0]), abs(dimensions[1])) + offset
+                else:
+                    radius = math.hypot(abs(dimensions[0]), abs(dimensions[1])) / 2 + offset
+                collider_radii.append(radius)
+            if collider_radii:
+                return max(collider_radii) * self.LAND_GROUND_FOOTPRINT_FACTOR / 1852
             # A number of small installations have no selection collider in
             # their definition.  Their authoritative footprint is still
             # available in the general Length/Beam fields.
@@ -272,7 +332,8 @@ class UnitMixin:
             if not all(dimensions):
                 return None
             try:
-                return math.hypot(float(dimensions[0].group(1)), float(dimensions[1].group(1))) / (2 * 1852)
+                return (math.hypot(float(dimensions[0].group(1)), float(dimensions[1].group(1)))
+                        * self.LAND_GROUND_FOOTPRINT_FACTOR / (2 * 1852))
             except (AttributeError, ValueError):
                 return None
         section = match.group(1)
@@ -291,51 +352,44 @@ class UnitMixin:
         if not scale:
             return None
         half_diagonal = math.hypot(abs(scale[0]), abs(scale[2])) / 2
-        return (half_diagonal + math.hypot(position[0], position[2])) / 1852
+        return ((half_diagonal + math.hypot(position[0], position[2]))
+                * self.LAND_GROUND_FOOTPRINT_FACTOR / 1852)
 
     def arrange_land_items(self, items: list[tuple[list[dict[str, Any]], dict[str, Any]]]) -> None:
         """Nudge installation representatives until selection footprints clear."""
         footprints = [(item, self.collision_radius_nm(item)) for _, item in items]
         # A small gap avoids touching collider edges and makes the layout less
         # sensitive to floating-point rounding in the game/editor.
-        gap_m = 0.5
-        for _ in range(12):
-            changed = False
-            for left_index, (left, left_radius) in enumerate(footprints):
-                if left_radius is None:
-                    continue
-                left_point = left.setdefault("position", {})
-                for right_index in range(left_index):
-                    right, right_radius = footprints[right_index]
-                    if right_radius is None:
-                        continue
-                    right_point = right.setdefault("position", {})
-                    east = (float(left_point.get("longitude", self.center_lon))
-                            - float(right_point.get("longitude", self.center_lon))) * 60 * math.cos(math.radians(self.center_lat))
-                    north = (float(left_point.get("latitude", self.center_lat))
-                             - float(right_point.get("latitude", self.center_lat))) * 60
-                    distance = math.hypot(east, north)
-                    required = left_radius + right_radius + gap_m / 1852
-                    if distance >= required:
-                        continue
-                    if distance < 0.001:
-                        angle = (left_index + right_index + 1) * math.pi / 3
-                        dx, dz = math.cos(angle), math.sin(angle)
-                    else:
-                        dx, dz = east / distance, north / distance
-                    move = (required - distance) / 2
-                    scale = 60 * math.cos(math.radians(self.center_lat))
-                    left_east = (float(left_point.get("longitude", self.center_lon)) - self.center_lon) * scale
-                    left_north = (float(left_point.get("latitude", self.center_lat)) - self.center_lat) * 60
-                    right_east = (float(right_point.get("longitude", self.center_lon)) - self.center_lon) * scale
-                    right_north = (float(right_point.get("latitude", self.center_lat)) - self.center_lat) * 60
-                    left_point["longitude"] = self.center_lon + (left_east + dx * move) / scale
-                    left_point["latitude"] = self.center_lat + (left_north + dz * move) / 60
-                    right_point["longitude"] = self.center_lon + (right_east - dx * move) / scale
-                    right_point["latitude"] = self.center_lat + (right_north - dz * move) / 60
-                    changed = True
-            if not changed:
-                break
+        gap_nm = 2.0 / 1852
+        largest_radius = max((radius or 0 for _, radius in footprints), default=0)
+        if not largest_radius:
+            return
+        grid_step = largest_radius * 2 + gap_nm
+        scale = 60 * math.cos(math.radians(self.center_lat))
+        placed: list[tuple[dict[str, Any], float]] = []
+        # A deterministic square-spiral candidate list gives every item a
+        # position that is clear of all earlier items.  Unlike pairwise
+        # repulsion, it cannot finish with an old overlap reintroduced by a
+        # later correction in a dense installation cluster.
+        candidates = [(x, z) for x in range(-12, 13) for z in range(-12, 13)]
+        candidates.sort(key=lambda offset: (offset[0] * offset[0] + offset[1] * offset[1], offset[0], offset[1]))
+        for item, radius in footprints:
+            if radius is None:
+                continue
+            point = item.setdefault("position", {})
+            origin_east = (float(point.get("longitude", self.center_lon)) - self.center_lon) * scale
+            origin_north = (float(point.get("latitude", self.center_lat)) - self.center_lat) * 60
+            for grid_x, grid_z in candidates:
+                east = origin_east + grid_x * grid_step
+                north = origin_north + grid_z * grid_step
+                if all(math.hypot(east - other_east, north - other_north) >= radius + other_radius + gap_nm
+                       for other, other_radius in placed
+                       for other_east, other_north in [((float(other.get("position", {}).get("longitude", self.center_lon)) - self.center_lon) * scale,
+                                                       (float(other.get("position", {}).get("latitude", self.center_lat)) - self.center_lat) * 60)]):
+                    point["longitude"] = self.center_lon + east / scale
+                    point["latitude"] = self.center_lat + north / 60
+                    placed.append((item, radius))
+                    break
 
     def land_distance(self, first: dict[str, Any], second: dict[str, Any]) -> float:
         """Return the horizontal distance between two land records in NM."""

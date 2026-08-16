@@ -50,8 +50,11 @@ class RenderMixin:
         random_group_members = {id(item) for members in random_groups.values() for item in members}
         random_group_emitted: set[tuple[str, int]] = set()
         random_group_ids: dict[str, set[int]] = {"friendly": set(), "enemy": set(), "neutral": set()}
+        aircraft_items = list(self.data.get("aircraft", [])) if isinstance(self.data.get("aircraft"), list) else []
+        aircraft_items.extend(self.objective_aircraft())
         for source in ("vessels", "aircraft"):
-            for item in self.data.get(source, []) if isinstance(self.data.get(source), list) else []:
+            source_items = aircraft_items if source == "aircraft" else self.data.get(source, [])
+            for item in source_items if isinstance(source_items, list) else []:
                 role = self.role(item); prefix = role_prefix(role)
                 random_key = (role, int(item["group"])) if source == "vessels" and isinstance(item.get("group"), (int, float)) else None
                 if id(item) in random_group_members:
@@ -113,11 +116,14 @@ class RenderMixin:
                 for member in cluster:
                     if member.get("uniquename"):
                         units[str(member["uniquename"])] = section
+                    # Fleet Command groups can contain an airbase plus its
+                    # aircraft. Sea Power formations are movement formations;
+                    # including the land installation makes the airbase part
+                    # of an aircraft formation and can prevent it from
+                    # spawning/behaving as an airbase. Keep land units out of
+                    # tactical formation references.
                     if isinstance(member.get("group"), (int, float)):
                         group_id = int(member["group"])
-                        refs = group_refs[role].setdefault(group_id, [])
-                        if section not in refs:
-                            refs.append(section)
                         if isinstance(member.get("waypoints"), list) and member.get("waypoints"):
                             group_has_routes[role].add(group_id)
                 if role != "friendly" and any(self.autodetect(member) for member in cluster):
