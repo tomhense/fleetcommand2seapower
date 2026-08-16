@@ -9,8 +9,9 @@ import re
 import unittest
 from pathlib import Path
 
-from scs_converter import parse
-from seapower_generator import Generator, Resolver
+from fleetcommand2seapower.scs_converter import parse
+from fleetcommand2seapower.cli import converter_json
+from fleetcommand2seapower.seapower_generator import Generator, Resolver
 
 
 ROOT = Path(__file__).parent
@@ -24,6 +25,13 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         cls.resolver = Resolver(ASSETS, MAPPING, lambda _: None)
         cls.sources = sorted(path for path in (ROOT / "FleetCommand_scenarios").iterdir()
                              if path.suffix.lower() in {".scs", ".sct", ".scm", ".scc"})
+
+    def test_generator_accepts_converter_json_string_intermediate(self) -> None:
+        source = ROOT / "FleetCommand_scenarios" / "Single06.scs"
+        converted_json = converter_json(source)
+        rendered = Generator(json.loads(converted_json), self.resolver).render()
+        self.assertIn("[Mission]", rendered)
+        self.assertIn("NumberOfTriggers=", rendered)
 
     def test_all_scenarios_render_valid_ini(self) -> None:
         self.assertEqual(len(self.sources), 50)

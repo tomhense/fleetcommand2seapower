@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fleetcommand2seapower"
+version = "0.1.0"
+description = "Convert Fleet Command scenarios into Sea Power missions"
+requires-python = ">=3.10"
+
+[project.scripts]
+fleetcommand2seapower = "fleetcommand2seapower.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fleetcommand2seapower*"]
+
+[tool.setuptools.package-data]
+fleetcommand2seapower = ["seapower_mapping.json", "_info.ini"]

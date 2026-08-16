@@ -1,6 +1,6 @@
 # Fleet Command scenario converter
 
-`scs_converter.py` is a dependency-free Python CLI that parses Fleet Command
+The `parse` subcommand is the Fleet Command parser that parses Fleet Command
 `.scs` scenario files and emits structured JSON. It handles quoted fields,
 multiline text blocks, entities, groups, alliances, goals, waypoints and
 random movement boxes. The bitmap/palette tail is intentionally skipped.
@@ -8,7 +8,7 @@ random movement boxes. The bitmap/palette tail is intentionally skipped.
 See [SCS_FORMAT.md](SCS_FORMAT.md) for the detailed format reference.
 
 ```sh
-python3 scs_converter.py Single04.scs -o Single04.json
+fleetcommand2seapower parse Single04.scs -o Single04.json
 ```
 
 The JSON separates `aircraft`, `land_units`, `vessels`, `air_stations`,
@@ -32,16 +32,16 @@ SSBN, SSGN, SSN, and SSK), land units, SAMs, artillery, and air stations.
 
 ## Sea Power mission generation
 
-`seapower_generator.py` converts the custom Fleet Command JSON into a best-effort
+The `convert` subcommand converts the custom Fleet Command JSON into a best-effort
 Sea Power mission INI. It uses the unit definitions under
-`SeaPower_StreamingAssets/{aircraft,vessels,land_units}` and the editable
-`seapower_mapping.json` file. Explicit mappings are tried first, followed by
+the installed Sea Power StreamingAssets directory and the bundled
+`seapower_mapping.json` mapping. Explicit mappings are tried first, followed by
 class/country-aware matching and conservative generic fallbacks. Every fallback,
 ambiguous match, unsupported partial-damage goal, and non-portable attachment is
-reported on stderr.
+reported through Python logging on stdout.
 
 ```sh
-python3 seapower_generator.py Single04.json Single04_seapower.ini \
+fleetcommand2seapower convert Single04.json Single04_seapower.ini \
   --streaming-assets SeaPower_StreamingAssets \
   --mapping seapower_mapping.json
 ```
@@ -74,13 +74,13 @@ The generator also accepts a directory and converts all `.scs`, `.sct`, `.scm`,
 and `.scc` scenarios in one pass:
 
 ```sh
-python3 seapower_generator.py FleetCommand_scenarios \
+fleetcommand2seapower convert FleetCommand_scenarios \
   --output-dir SeaPower_Missions_Generated \
-  --year 1985
+  --year 1986
 ```
 
-The batch run writes `conversion_warnings.txt` and `quality_report.json` next to
-the generated missions. The report records mapped units, omitted units,
+Warnings are logged to stdout. The batch run writes `quality_report.json` only with
+`--debug`; the report records mapped units, omitted units,
 unsupported features, and warning categories for each scenario.
 
 Vessel `AIRCRAFT` attachments are expanded into records containing `name`,
@@ -104,6 +104,50 @@ units per degree. These defaults are supported by the repeated `0` to
 different map reference is known:
 
 ```sh
-python3 scs_converter.py scenario.scs --origin-x 0 --origin-y 0 \
+fleetcommand2seapower parse scenario.scs --origin-x 0 --origin-y 0 \
   --units-per-degree 100000
 ```
+
+
+## Unified Python CLI
+
+The supported command-line interface is:
+
+    fleetcommand2seapower parse [INPUT] [--output-dir OUTPUT_DIR]
+    fleetcommand2seapower convert [INPUT] [OUTPUT] [--output-dir OUTPUT_DIR]
+
+The parse command handles .scs, .sct, .scm, and .scc files. With no input, it
+reads the default Fleet Command Steam scenario directory:
+
+- Linux: ~/.local/share/Steam/steamapps/common/Fleet Command/scenario
+- Windows: %PROGRAMFILES(X86)%\\Steam\\steamapps\\common\\Fleet Command\\scenario
+  (falling back to %PROGRAMFILES%)
+
+Batch parsing creates JSON files and copies the project _info.ini template into
+the output directory. Leading and trailing whitespace is removed from scenario
+basenames when output files are created.
+
+The convert command accepts a single JSON/scenario file or a directory of
+either. Fleet Command scenario files are implicitly parsed and passed through a
+JSON-string intermediate before Sea Power generation. The default mission year
+is 1986.
+
+Sea Power definitions default to the installed Steam assets directory:
+
+- Linux: ~/.local/share/Steam/steamapps/common/Sea Power/Sea Power_Data/StreamingAssets/original
+- Windows: %PROGRAMFILES(X86)%\\Steam\\steamapps\\common\\Sea Power\\Sea Power_Data\\StreamingAssets\\original
+  (falling back to %PROGRAMFILES%)
+
+The mapping file is bundled in the Python package. Use --mapping and
+--streaming-assets to override these paths.
+
+Warnings and errors are emitted using Python logging to stdout. The converter
+does not create conversion_warnings.txt. quality_report.json is created only
+when --debug is supplied.
+
+Examples:
+
+    fleetcommand2seapower parse
+    fleetcommand2seapower parse /path/to/scenarios --output-dir converted-json
+    fleetcommand2seapower convert /path/to/scenarios --output-dir missions
+    fleetcommand2seapower convert /path/to/scenarios --output-dir missions --debug

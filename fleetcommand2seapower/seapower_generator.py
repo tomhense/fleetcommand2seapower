@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scs_converter import parse as parse_source
+from .scs_converter import parse as parse_source
 
 
 def norm(value: Any) -> str:

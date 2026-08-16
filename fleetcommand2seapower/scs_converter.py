@@ -270,7 +270,7 @@ def parse(path: Path, origin_x: float = 555600, origin_y: float = 555600,
     converter = Converter(lat, lon, origin_x, origin_y, units_per_degree)
     result: dict[str, Any] = {
         "format": "fleet-command-scs-json",
-        "source": path.name,
+        "source": path.name.strip(),
         "metadata": header,
         "coordinate_system": {
             "projection": "local equirectangular",
