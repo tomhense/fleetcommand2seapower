@@ -1,5 +1,27 @@
 {
   "description": "Fleet Command names and classes mapped to Sea Power unit definition stems. Values are tried in order; the first existing definition wins.",
+  "conditional_map": [
+    {
+      "category": "land_units",
+      "match": {"name": ["Airport", "Airbase"], "class": ["AIRPORT", "AIRBASE"]},
+      "country_map": {
+        "Russia": ["wp_airbase_1", "wp_airbase_2", "wp_large_pvo_airbase"],
+        "USSR": ["wp_airbase_1", "wp_airbase_2", "wp_large_pvo_airbase"],
+        "Soviet Union": ["wp_airbase_1", "wp_airbase_2", "wp_large_pvo_airbase"],
+        "*": ["nato_small_airbase", "nato_very_small_airbase"]
+      }
+    },
+    {
+      "category": "land_units",
+      "match": {"name": ["SAM"], "class": ["SAM", "SURFACE TO AIR"]},
+      "country_map": {
+        "Russia": ["wp_sam_site_sa-2", "wp_sam_site_sa-3", "wp_sam_site_sa-10"],
+        "USSR": ["wp_sam_site_sa-2", "wp_sam_site_sa-3", "wp_sam_site_sa-10"],
+        "Soviet Union": ["wp_sam_site_sa-2", "wp_sam_site_sa-3", "wp_sam_site_sa-10"],
+        "*": ["nato_sam_skyguard"]
+      }
+    }
+  ],
   "name_map": {
     "O.H. Perry FFG": ["usn_ffg_oliver_hazard_perry", "usn_ffg_oliver_hazard_perry_longhull"],
     "TICO CG": ["usn_cg_ticonderoga"],

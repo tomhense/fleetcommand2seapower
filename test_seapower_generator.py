@@ -8,26 +8,31 @@ import json
 import re
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from fleetcommand2seapower.cli import (
+    converter_json,
+    default_scenario_dir,
+    default_streaming_assets,
+)
 from fleetcommand2seapower.scs_converter import parse
-from fleetcommand2seapower.cli import converter_json
 from fleetcommand2seapower.seapower_generator import Generator, Resolver
 
-
 ROOT = Path(__file__).parent
-ASSETS = ROOT / "SeaPower_StreamingAssets"
+ASSETS = default_streaming_assets()
 MAPPING = ROOT / "seapower_mapping.json"
 
 
+@unittest.skipUnless(default_scenario_dir().is_dir() and ASSETS.is_dir(), "Fleet Command and Sea Power Steam fixtures are not installed")
 class SeaPowerGeneratorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.resolver = Resolver(ASSETS, MAPPING, lambda _: None)
-        cls.sources = sorted(path for path in (ROOT / "FleetCommand_scenarios").iterdir()
+        cls.sources = sorted(path for path in (default_scenario_dir()).iterdir()
                              if path.suffix.lower() in {".scs", ".sct", ".scm", ".scc"})
 
     def test_generator_accepts_converter_json_string_intermediate(self) -> None:
-        source = ROOT / "FleetCommand_scenarios" / "Single06.scs"
+        source = default_scenario_dir() / "Single06.scs"
         converted_json = converter_json(source)
         rendered = Generator(json.loads(converted_json), self.resolver).render()
         self.assertIn("[Mission]", rendered)
@@ -56,7 +61,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
                         self.assertIn(option, available)
 
     def test_coordinate_center_is_preserved(self) -> None:
-        data = json.loads((ROOT / "FleetCommand_scenarios_converted" / "Single04.json").read_text(encoding="utf-8"))
+        data = parse(default_scenario_dir() / "Single04.scs")
         generator = Generator(data, self.resolver)
         rendered = generator.render()
         self.assertIn("MapCenterLatitude=-2.215835", rendered)
@@ -128,7 +133,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("Action_UnitRevealToTaskforce=Taskforce1|Identify", rendered)
 
     def test_parser_normalizes_autodetect_to_boolean(self) -> None:
-        data = parse(ROOT / "FleetCommand_scenarios" / "Single06.scs")
+        data = parse(default_scenario_dir() / "Single06.scs")
         values = [item["autodetect"] for item in data["land_units"] if "autodetect" in item]
         self.assertIn(True, values)
         self.assertIn(False, values)
@@ -149,7 +154,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertEqual(rendered.count("# FleetCommandMergedLandUnits="), 2)
 
     def test_pirate_conversion_keeps_embarked_aircraft_internal(self) -> None:
-        data = parse(ROOT / "FleetCommand_scenarios" / "Single04.scs")
+        data = parse(default_scenario_dir() / "Single04.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertIn("NumberOfTaskforce1Helicopters=0", rendered)
         self.assertNotIn("[Taskforce1Helicopter", rendered)
@@ -162,7 +167,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("[Trigger10]\nName=End mission.\nAction_ObjectivesCompleted=End_mission\nAction_EndMission=True\nAction_Victory=Taskforce2\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=54000", rendered)
 
     def test_pirate_probability_group_is_runtime_random(self) -> None:
-        data = parse(ROOT / "FleetCommand_scenarios" / "Single04.scs")
+        data = parse(default_scenario_dir() / "Single04.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertIn("NumberOfTaskforce1Vessels=1", rendered)
         self.assertIn("[Taskforce1Vessel1]", rendered)
@@ -174,7 +179,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertNotIn("Taskforce1_Formation1=", rendered)
 
     def test_single01_preserves_probabilities_decks_and_formation(self) -> None:
-        data = parse(ROOT / "FleetCommand_scenarios" / "Single01.scs")
+        data = parse(default_scenario_dir() / "Single01.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertEqual(rendered.count("[NeutralAircraft"), 6)
         self.assertEqual(rendered.count("SpawnChance=0.200"), 5)
@@ -193,21 +198,21 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("Taskforce1IntelMessage=Intel|New intelligence received|Acknowledge", rendered)
         self.assertIn("Taskforce1ScenarioIntel=Expect attack by TU-22M Backfire", rendered)
         self.assertIn("Action_Taskforce1_Intel=Taskforce1ScenarioIntel", rendered)
-        self.assertIn("Special_Force_Group_A=0,-100,Complete,Main", Generator(parse(ROOT / "FleetCommand_scenarios" / "Single02.scs"), self.resolver).render())
+        self.assertIn("Special_Force_Group_A=0,-100,Complete,Main", Generator(parse(default_scenario_dir() / "Single02.scs"), self.resolver).render())
 
     def test_objectives_have_display_names(self) -> None:
-        rendered = Generator(parse(ROOT / "FleetCommand_scenarios" / "Single02.scs"), self.resolver).render()
+        rendered = Generator(parse(default_scenario_dir() / "Single02.scs"), self.resolver).render()
         self.assertIn("Objective_Special_Force_Group_A=Special Force Group A", rendered)
         self.assertIn("Objective_Special_Forces_Stopped=Special Forces Stopped", rendered)
         self.assertIn("Objective_Mission_Over=Mission Over", rendered)
 
     def test_single17_maps_kuznetsov_to_soviet_carrier(self) -> None:
-        rendered = Generator(parse(ROOT / "FleetCommand_scenarios" / "Single17.scs"), self.resolver).render()
+        rendered = Generator(parse(default_scenario_dir() / "Single17.scs"), self.resolver).render()
         self.assertIn("Type=wp_cv_orel", rendered)
         self.assertNotIn("Type=usn_cv_kitty_hawk", rendered)
 
     def test_single02_patrol_group_selects_one_enemy_boat(self) -> None:
-        rendered = Generator(parse(ROOT / "FleetCommand_scenarios" / "Single02.scs"), self.resolver).render()
+        rendered = Generator(parse(default_scenario_dir() / "Single02.scs"), self.resolver).render()
         self.assertIn("NumberOfTaskforce2Vessels=1", rendered)
         self.assertIn("SpawnChance=1.000000", rendered)
         self.assertNotIn("Condition_Condition1_Type=UnitsInTheArea", rendered)
@@ -215,7 +220,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("[Trigger12]\nName=Mission Over\nAction_ObjectivesCompleted=Mission_Over\nAction_EndMission=True\nAction_Victory=Taskforce1\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=18000", rendered)
 
     def test_region_scc_files_are_parseable(self) -> None:
-        for source in sorted((ROOT / "FleetCommand_scenarios").glob("*.scc")):
+        for source in sorted((default_scenario_dir()).glob("*.scc")):
             with self.subTest(source=source.name):
                 rendered = Generator(parse(source), self.resolver).render()
                 parser = configparser.ConfigParser(interpolation=None, strict=True)
@@ -223,18 +228,36 @@ class SeaPowerGeneratorTests(unittest.TestCase):
                 self.assertIn("Mission", parser)
 
     def test_region1_keeps_explicit_allied_submarines_and_maps_invincible(self) -> None:
-        rendered = Generator(parse(ROOT / "FleetCommand_scenarios" / "Region1.scc"), self.resolver).render()
+        rendered = Generator(parse(default_scenario_dir() / "Region1.scc"), self.resolver).render()
         self.assertIn("NumberOfTaskforce1Submarines=2", rendered)
         self.assertEqual(rendered.count("Type=usn_cv_kitty_hawk"), 0)
         self.assertEqual(rendered.count("Type=wp_takr_kiev"), 3)
 
     def test_soviet_installations_use_soviet_definitions(self) -> None:
-        data = parse(ROOT / "FleetCommand_scenarios" / "Single31.scs")
+        data = parse(default_scenario_dir() / "Single31.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertGreater(rendered.count("Type=wp_airbase_1"), 0)
         self.assertGreater(rendered.count("Type=wp_sam_site_sa-2"), 0)
         self.assertNotIn("Type=nato_small_airbase", rendered)
         self.assertNotIn("Type=nato_sam_skyguard", rendered)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class ResolverMappingTests(unittest.TestCase):
+    def test_country_aware_rules_are_loaded_from_json(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for category in ("land_units", "vessels", "aircraft", "biologic"):
+                (root / category).mkdir()
+            for definition in ("wp_airbase_1", "nato_small_airbase", "wp_sam_site_sa-2", "nato_sam_skyguard"):
+                (root / "land_units" / f"{definition}.ini").touch()
+            resolver = Resolver(root, MAPPING, lambda _: None)
+            self.assertEqual(resolver.resolve({"name": "Airport", "country": "Russia"}, "land_units"), "wp_airbase_1")
+            self.assertEqual(resolver.resolve({"name": "Airport", "country": "United States"}, "land_units"), "nato_small_airbase")
+            self.assertEqual(resolver.resolve({"name": "SAM", "country": "USSR"}, "land_units"), "wp_sam_site_sa-2")
 
 
 if __name__ == "__main__":

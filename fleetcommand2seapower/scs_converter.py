@@ -7,12 +7,10 @@ unknown fields are retained instead of making newer/older scenarios fail.
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import re
 import shlex
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -334,24 +332,3 @@ def parse(path: Path, origin_x: float = 555600, origin_y: float = 555600,
         i += 1
     resolve_alliances(result)
     return null_empty(result)
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Convert Fleet Command .scs scenarios to JSON")
-    parser.add_argument("input", type=Path)
-    parser.add_argument("-o", "--output", type=Path, help="output JSON path (default: stdout)")
-    parser.add_argument("--origin-x", type=float, default=555600)
-    parser.add_argument("--origin-y", type=float, default=555600)
-    parser.add_argument("--units-per-degree", type=float, default=111120)
-    args = parser.parse_args()
-    document = parse(args.input, args.origin_x, args.origin_y, args.units_per_degree)
-    rendered = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    else:
-        sys.stdout.write(rendered)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
