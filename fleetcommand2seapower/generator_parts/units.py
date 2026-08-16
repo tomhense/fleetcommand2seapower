@@ -153,6 +153,14 @@ class UnitMixin:
         geo_altitude = "low" if not altitude else f"{float(altitude):.0f}"
         lines = [section, f"Type={definition}",
                  f"GeoPosition={float(point.get('latitude', self.center_lat)):.8f},{float(point.get('longitude', self.center_lon)):.8f},{geo_altitude}"]
+        # Fleet Command installations generally have considerably fewer hit
+        # points than the corresponding Sea Power scenery entity.  Sea Power
+        # does not expose a numeric hit-point override in a mission file, but
+        # it does support the same damage state used by the mission editor.
+        # Starting these large replacement models heavily damaged keeps a
+        # converted building/SAM from becoming an unexpectedly durable target.
+        if self.land_cluster_kind(item) in {"building", "sam"} or self.is_airbase(item, definition):
+            lines.append("Damage=Heavy")
         if self.is_airbase(item, definition):
             # Airbase definitions have a built-in aircraft roster in Sea Power.
             # Replace it explicitly or those aircraft appear even when the
@@ -169,16 +177,23 @@ class UnitMixin:
     def land_cluster_kind(self, item: dict[str, Any]) -> str | None:
         """Return the merge class for small Fleet Command land entities."""
         definition = self.resolver.resolve(item, "land_units") or ""
-        text = norm(f"{item.get('name')} {item.get('class')} {definition}")
+        text = norm(f"{item.get('name')} {item.get('class')} {item.get('entity_type')} {definition}")
         if self.is_airbase(item, definition) or "ssm" in text or "silkworm" in text:
             return None
-        if "sam" in text or "skyguard" in text or "launcher" in text:
+        # Database names vary between scenarios (SAM, SA-2, PVO, etc.).
+        # Include the entity type because some records have no useful class.
+        sam_tokens = ("sam", "surface to air", "air defense", "antiair", "skyguard",
+                      "sa 2", "sa 3", "sa 10", "hawk", "roland", "crotale",
+                      "chaparral", "rapier")
+        if any(token in text for token in sam_tokens) or ("launcher" in text and "building" not in text):
             return "sam"
-        if (definition.startswith(("civ_comm_buildings", "tgt_", "warehouses_", "airfield_"))
-                or str(item.get("name") or "") in {"Bunker", "Building2", "Building4", "Building5", "ChemicalPlant",
-                                                       "Dock", "DrugFactory", "Factory", "Hangar", "Hospital", "Piers",
-                                                       "PowerPlant", "Sonalysts", "TrainingFacility", "Whouse"}
-                or str(item.get("name") or "").startswith(("Tent_",))):
+        name = norm(str(item.get("name") or ""))
+        building_names = {"bunker", "building2", "building4", "building5", "chemicalplant",
+                          "dock", "drugfactory", "factory", "hangar", "hospital", "piers",
+                          "powerplant", "sonalysts", "trainingfacility", "whouse"}
+        if (str(item.get("entity_type") or "").upper() == "BUILDINGENTITY"
+                or definition.startswith(("civ_comm_buildings", "tgt_", "warehouses_", "airfield_"))
+                or name in building_names or name.startswith(("tent ", "building"))):
             return "building"
         return None
 
@@ -194,38 +209,145 @@ class UnitMixin:
             else:
                 clusters.append([item])
         for (_, _), candidates in grouped.items():
-            parent = list(range(len(candidates)))
-
-            def find(index: int) -> int:
-                while parent[index] != index:
-                    parent[index] = parent[parent[index]]
-                    index = parent[index]
-                return index
-
-            def union(left: int, right: int) -> None:
-                left, right = find(left), find(right)
-                if left != right:
-                    parent[right] = left
-
             radius = self.SAM_CLUSTER_RADIUS_NM if candidates and self.land_cluster_kind(candidates[0]) == "sam" else self.LAND_CLUSTER_RADIUS_NM
-            for index, item in enumerate(candidates):
-                first = item.get("position") or {}
-                for other_index in range(index):
-                    other = candidates[other_index]
-                    second = other.get("position") or {}
-                    latitude = (float(first.get("latitude", self.center_lat))
-                                + float(second.get("latitude", self.center_lat))) / 2
-                    east = (float(first.get("longitude", self.center_lon))
-                            - float(second.get("longitude", self.center_lon))) * 60 * math.cos(math.radians(latitude))
-                    north = (float(first.get("latitude", self.center_lat))
-                             - float(second.get("latitude", self.center_lat))) * 60
-                    if math.hypot(east, north) <= radius:
-                        union(index, other_index)
-            merged: dict[int, list[dict[str, Any]]] = {}
-            for index, item in enumerate(candidates):
-                merged.setdefault(find(index), []).append(item)
-            clusters.extend(merged.values())
+            # Complete-linkage clustering: every member must be close to all
+            # existing members.  A union-find/transitive merge lets a long
+            # chain of tiny buildings turn into one very large replacement
+            # model, which is exactly the overlap problem this conversion is
+            # meant to avoid.
+            grouped_candidates: list[list[dict[str, Any]]] = []
+            for item in candidates:
+                for cluster in grouped_candidates:
+                    if all(self.land_distance(item, other) <= radius for other in cluster):
+                        cluster.append(item)
+                        break
+                else:
+                    grouped_candidates.append([item])
+            clusters.extend(grouped_candidates)
         return clusters
+
+    def land_cluster_items(self, clusters: list[list[dict[str, Any]]]) -> list[tuple[list[dict[str, Any]], dict[str, Any]]]:
+        """Build renderable representatives, retaining merged source members."""
+        result: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
+        for cluster in clusters:
+            item = cluster[0]
+            if len(cluster) > 1:
+                item = dict(item)
+                points = [member.get("position") or {} for member in cluster]
+                item["position"] = {
+                    "latitude": sum(float(point.get("latitude", self.center_lat)) for point in points) / len(points),
+                    "longitude": sum(float(point.get("longitude", self.center_lon)) for point in points) / len(points),
+                    "altitude": sum(float(point.get("altitude") or 0) for point in points) / len(points),
+                }
+            result.append((cluster, item))
+        self.arrange_land_items(result)
+        return result
+
+    def collision_radius_nm(self, item: dict[str, Any]) -> float | None:
+        """Read a land definition's [coll_selection] footprint in nautical miles.
+
+        Sea Power's scenario positions use metres (60 map units per NM), while
+        the definition dimensions are model metres.  A bounding circle is used
+        here deliberately: it remains safe when the unit's heading rotates the
+        rectangular selection box.
+        """
+        definition = self.resolver.resolve(item, "land_units")
+        if self.land_cluster_kind(item) not in {"building", "sam"} and not self.is_airbase(item, definition or ""):
+            return None
+        root = getattr(self.resolver, "root", None)
+        path = root / "land_units" / f"{definition}.ini" if root and definition else None
+        if path is None or not path.is_file():
+            return None
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+        match = re.search(r"(?ms)^\[coll_selection\]\s*(.*?)(?=^\[|\Z)", text)
+        if not match:
+            # A number of small installations have no selection collider in
+            # their definition.  Their authoritative footprint is still
+            # available in the general Length/Beam fields.
+            dimensions = [re.search(rf"(?m)^{name}=\s*([-+.0-9eE]+)", text)
+                          for name in ("Length", "Beam")]
+            if not all(dimensions):
+                return None
+            try:
+                return math.hypot(float(dimensions[0].group(1)), float(dimensions[1].group(1))) / (2 * 1852)
+            except (AttributeError, ValueError):
+                return None
+        section = match.group(1)
+
+        def vector(name: str) -> tuple[float, float, float] | None:
+            value = re.search(rf"(?m)^{name}=\s*([-+.0-9eE]+)\s*,\s*([-+.0-9eE]+)\s*,\s*([-+.0-9eE]+)", section)
+            if not value:
+                return None
+            try:
+                return tuple(float(value.group(index)) for index in range(1, 4))
+            except ValueError:
+                return None
+
+        scale = vector("Scale")
+        position = vector("Position") or (0.0, 0.0, 0.0)
+        if not scale:
+            return None
+        half_diagonal = math.hypot(abs(scale[0]), abs(scale[2])) / 2
+        return (half_diagonal + math.hypot(position[0], position[2])) / 1852
+
+    def arrange_land_items(self, items: list[tuple[list[dict[str, Any]], dict[str, Any]]]) -> None:
+        """Nudge installation representatives until selection footprints clear."""
+        footprints = [(item, self.collision_radius_nm(item)) for _, item in items]
+        # A small gap avoids touching collider edges and makes the layout less
+        # sensitive to floating-point rounding in the game/editor.
+        gap_m = 0.5
+        for _ in range(12):
+            changed = False
+            for left_index, (left, left_radius) in enumerate(footprints):
+                if left_radius is None:
+                    continue
+                left_point = left.setdefault("position", {})
+                for right_index in range(left_index):
+                    right, right_radius = footprints[right_index]
+                    if right_radius is None:
+                        continue
+                    right_point = right.setdefault("position", {})
+                    east = (float(left_point.get("longitude", self.center_lon))
+                            - float(right_point.get("longitude", self.center_lon))) * 60 * math.cos(math.radians(self.center_lat))
+                    north = (float(left_point.get("latitude", self.center_lat))
+                             - float(right_point.get("latitude", self.center_lat))) * 60
+                    distance = math.hypot(east, north)
+                    required = left_radius + right_radius + gap_m / 1852
+                    if distance >= required:
+                        continue
+                    if distance < 0.001:
+                        angle = (left_index + right_index + 1) * math.pi / 3
+                        dx, dz = math.cos(angle), math.sin(angle)
+                    else:
+                        dx, dz = east / distance, north / distance
+                    move = (required - distance) / 2
+                    scale = 60 * math.cos(math.radians(self.center_lat))
+                    left_east = (float(left_point.get("longitude", self.center_lon)) - self.center_lon) * scale
+                    left_north = (float(left_point.get("latitude", self.center_lat)) - self.center_lat) * 60
+                    right_east = (float(right_point.get("longitude", self.center_lon)) - self.center_lon) * scale
+                    right_north = (float(right_point.get("latitude", self.center_lat)) - self.center_lat) * 60
+                    left_point["longitude"] = self.center_lon + (left_east + dx * move) / scale
+                    left_point["latitude"] = self.center_lat + (left_north + dz * move) / 60
+                    right_point["longitude"] = self.center_lon + (right_east - dx * move) / scale
+                    right_point["latitude"] = self.center_lat + (right_north - dz * move) / 60
+                    changed = True
+            if not changed:
+                break
+
+    def land_distance(self, first: dict[str, Any], second: dict[str, Any]) -> float:
+        """Return the horizontal distance between two land records in NM."""
+        first_point = first.get("position") or {}
+        second_point = second.get("position") or {}
+        latitude = (float(first_point.get("latitude", self.center_lat))
+                    + float(second_point.get("latitude", self.center_lat))) / 2
+        east = (float(first_point.get("longitude", self.center_lon))
+                - float(second_point.get("longitude", self.center_lon))) * 60 * math.cos(math.radians(latitude))
+        north = (float(first_point.get("latitude", self.center_lat))
+                 - float(second_point.get("latitude", self.center_lat))) * 60
+        return math.hypot(east, north)
 
     def flight_deck(self, item: dict[str, Any]) -> tuple[dict[str, int], list[tuple[str, int, str]]]:
         """Map a Fleet Command aircraft roster to Sea Power's air group.
@@ -334,4 +456,3 @@ class UnitMixin:
         definition = definition if definition in self.resolver.files["aircraft"] else "civ_c340"
         section = f"[NeutralAircraft{index}]\nType={definition}\nSquadronReference=Default\nMissionType=NoMission\nCrewSkill=Trained\nRelativePositionInNM={self.pos(item['position'])}\nTelegraph={max(2, min(5, round(speed / 50)))}\nHeading={heading:.2f}\nWaypoints={self.pos(item['waypoints'][0])}\n# FleetCommandAirCorridor={corridor.get('name') or 'unnamed'}"
         return section
-

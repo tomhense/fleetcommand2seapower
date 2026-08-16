@@ -99,16 +99,7 @@ class RenderMixin:
                             group_has_routes[role].add(group_id)
                     if source == "vessels":
                         blocks.extend(self.attached_aircraft(prefix, item, section, counts))
-        for cluster in self.land_clusters():
-            item = cluster[0]
-            if len(cluster) > 1:
-                item = dict(item)
-                points = [member.get("position") or {} for member in cluster]
-                item["position"] = {
-                    "latitude": sum(float(point.get("latitude", self.center_lat)) for point in points) / len(points),
-                    "longitude": sum(float(point.get("longitude", self.center_lon)) for point in points) / len(points),
-                    "altitude": sum(float(point.get("altitude") or 0) for point in points) / len(points),
-                }
+        for cluster, item in self.land_cluster_items(self.land_clusters()):
             role = self.role(item); prefix = role_prefix(role)
             key = prefix + "LandUnit"
             result = self.land_section(prefix, counts[key] + 1, item)
