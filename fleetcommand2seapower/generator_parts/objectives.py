@@ -94,6 +94,7 @@ class ObjectiveMixin:
             time_goal = bool(re.search(r"\bend\s*mission\b|\bmission\s+over\b|\bquit\b|\bfail", name, re.IGNORECASE))
             all_enemy_aircraft = bool(re.search(r"hostile.*air|all.*air|air.*destroyed", name, re.IGNORECASE))
             ctype = None
+            condition_types: list[str] | None = None
             child_sections = []
             for child in children_by_parent.get(int(float(goal.get("goalid") or -1)), []):
                 child_section = units.get(str(child.get("uniquename") or ""))
@@ -105,8 +106,13 @@ class ObjectiveMixin:
                 if float(goal.get("damage") or 100) < 95:
                     self.warn(f"goal {name!r} requires partial damage; using Sea Power UnitDestroyed workaround")
             elif goal_type == 3 and all_enemy_aircraft:
-                condition = "Condition_Condition1_Taskforce=Taskforce2\nCondition_Condition1_UnitType=Aircraft"
-                ctype = "HasNoUnitsOfType"
+                condition_lines = []
+                condition_types = []
+                for condition_number, taskforce in enumerate(self.enemy_taskforce_prefixes, 1):
+                    condition_lines.extend((f"Condition_Condition{condition_number}_Taskforce={taskforce}",
+                                            f"Condition_Condition{condition_number}_UnitType=Aircraft"))
+                    condition_types.append("HasNoUnitsOfType")
+                condition = "\n".join(condition_lines)
             elif goal_type == 3 and time_goal and goal_start > 0:
                 condition = f"Condition_Condition1_Time={goal_start}"
                 ctype = "Time"
@@ -147,9 +153,13 @@ class ObjectiveMixin:
             if goal_type == 3:
                 victory = "Taskforce1" if re.search(r"mission\s+over", name, re.IGNORECASE) else ("Taskforce2" if time_goal else "Taskforce1")
                 lines += ["Action_EndMission=True", f"Action_Victory={victory}"]
-            if ctype:
+            if condition_types:
+                lines.extend(f"Condition_Condition{number}_Type={condition_type}"
+                             for number, condition_type in enumerate(condition_types, 1))
+            elif ctype:
                 lines.append(f"Condition_Condition1_Type={ctype}")
-            condition_count = condition.count("_Type=") or 1
+            condition_count = len(condition_types) if condition_types else max(
+                [int(number) for number in re.findall(r"Condition_Condition(\d+)_", condition)] or [1])
             lines += [condition, "ConditionsCompleted=" + " AND ".join(
                 f"<Condition{number}>" for number in range(1, condition_count + 1))]
             triggers.append("\n".join(lines))

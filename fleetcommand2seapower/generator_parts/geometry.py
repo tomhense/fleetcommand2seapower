@@ -57,9 +57,35 @@ class GeometryMixin:
 
     def role(self, item: dict[str, Any]) -> str:
         role = str(item.get("alliance_role") or "").lower()
+        if not role:
+            alliance_id = item.get("alliance_id", item.get("alliance"))
+            try:
+                alliance_id = int(alliance_id)
+            except (TypeError, ValueError):
+                alliance_id = None
+            for alliance in self.data.get("alliances", []) if isinstance(self.data.get("alliances"), list) else []:
+                if isinstance(alliance, dict) and alliance.get("id") == alliance_id:
+                    role = str(alliance.get("role") or "").lower()
+                    break
         if role in {"enemy", "hostile", "threat"}: return "enemy"
         if role in {"neutral", "unknown"}: return "neutral"
         return "friendly"
+
+    def alliance_id(self, item: dict[str, Any]) -> int | None:
+        value = item.get("alliance_id", item.get("alliance"))
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def taskforce_for(self, item: dict[str, Any]) -> str:
+        """Return the Sea Power taskforce assigned to a Fleet Command entity."""
+        role = self.role(item)
+        if role == "neutral":
+            return "Neutral"
+        if role == "enemy":
+            return self.enemy_taskforces.get(self.alliance_id(item), "Taskforce2")
+        return "Taskforce1"
 
     def autodetect(self, item: dict[str, Any]) -> bool:
         """Return Fleet Command's automatic initial-reveal flag."""

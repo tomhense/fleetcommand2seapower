@@ -154,7 +154,7 @@ class UnitMixin:
                 continue
             if group_probability < 100 or not 0 < member_probability < 100:
                 continue
-            grouped.setdefault((self.role(item), group_id), []).append(item)
+            grouped.setdefault((self.taskforce_for(item), group_id), []).append(item)
         selected: dict[tuple[str, int], list[dict[str, Any]]] = {}
         for key, members in grouped.items():
             has_routes = any(item.get("waypoints") for item in members)
@@ -242,7 +242,7 @@ class UnitMixin:
         for item in items:
             kind = self.land_cluster_kind(item) if isinstance(item, dict) else None
             if kind:
-                grouped.setdefault((self.role(item), kind), []).append(item)
+                grouped.setdefault((self.taskforce_for(item), kind), []).append(item)
             else:
                 clusters.append([item])
         for (_, _), candidates in grouped.items():

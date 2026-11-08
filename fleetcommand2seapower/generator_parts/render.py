@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..generator_utils import ini_text, role_prefix
+from ..generator_utils import ini_text
 
 class RenderMixin:
     def render(self) -> str:
@@ -38,31 +38,29 @@ class RenderMixin:
                   "[Mission]", f"Difficulty={difficulty}", "PlayerTaskforce=Taskforce1", "EnemyTaskforce=Taskforce2"]
         units: dict[str, str] = {}
         blocks: list[str] = []
-        counts = {"Taskforce1Vessel": 0, "Taskforce2Vessel": 0, "NeutralVessel": 0,
-                  "Taskforce1Submarine": 0, "Taskforce2Submarine": 0, "NeutralSubmarine": 0,
-                  "Taskforce1Aircraft": 0, "Taskforce2Aircraft": 0, "NeutralAircraft": 0,
-                  "Taskforce1Helicopter": 0, "Taskforce2Helicopter": 0, "NeutralHelicopter": 0,
-                  "Taskforce1LandUnit": 0, "Taskforce2LandUnit": 0, "NeutralLandUnit": 0}
-        group_refs: dict[str, dict[int, list[str]]] = {"friendly": {}, "enemy": {}, "neutral": {}}
-        group_has_routes: dict[str, set[int]] = {"friendly": set(), "enemy": set(), "neutral": set()}
+        taskforces = list(dict.fromkeys(["Taskforce1", *self.enemy_taskforce_prefixes, "Neutral"]))
+        categories = ("Vessel", "Submarine", "Aircraft", "Helicopter", "LandUnit")
+        counts = {prefix + category: 0 for prefix in taskforces for category in categories}
+        group_refs: dict[str, dict[int, list[str]]] = {prefix: {} for prefix in taskforces}
+        group_has_routes: dict[str, set[int]] = {prefix: set() for prefix in taskforces}
         autodetect_units: list[str] = []
         random_groups = self.probability_groups("vessels")
         random_group_members = {id(item) for members in random_groups.values() for item in members}
         random_group_emitted: set[tuple[str, int]] = set()
-        random_group_ids: dict[str, set[int]] = {"friendly": set(), "enemy": set(), "neutral": set()}
+        random_group_ids: dict[str, set[int]] = {prefix: set() for prefix in taskforces}
         aircraft_items = list(self.data.get("aircraft", [])) if isinstance(self.data.get("aircraft"), list) else []
         aircraft_items.extend(self.objective_aircraft())
         for source in ("vessels", "aircraft"):
             source_items = aircraft_items if source == "aircraft" else self.data.get(source, [])
             for item in source_items if isinstance(source_items, list) else []:
-                role = self.role(item); prefix = role_prefix(role)
-                random_key = (role, int(item["group"])) if source == "vessels" and isinstance(item.get("group"), (int, float)) else None
+                role = self.role(item); prefix = self.taskforce_for(item)
+                random_key = (prefix, int(item["group"])) if source == "vessels" and isinstance(item.get("group"), (int, float)) else None
                 if id(item) in random_group_members:
                     if random_key in random_group_emitted:
                         continue
                     candidates = random_groups[random_key]
                     random_group_emitted.add(random_key)
-                    random_group_ids[role].add(random_key[1])
+                    random_group_ids[prefix].add(random_key[1])
                     candidate = self.choose_probability_candidate(candidates, random_key[1])
                     candidate_kind = self.category(candidate, source)
                     candidate_key = prefix + ("Submarine" if candidate_kind == "submarine" else "Vessel")
@@ -80,7 +78,7 @@ class RenderMixin:
                             units[str(candidate_item["uniquename"])] = section
                     if role != "friendly" and any(self.autodetect(candidate_item) for candidate_item in candidates):
                         autodetect_units.append(section)
-                    group_refs[role].setdefault(random_key[1], []).append(section)
+                    group_refs[prefix].setdefault(random_key[1], []).append(section)
                     blocks.extend(self.attached_aircraft(prefix, candidate, section, counts))
                     self.warn(f"group {random_key[1]} selected one reproducibly-random vessel at conversion time: {candidate.get('uniquename')!r}")
                     continue
@@ -97,13 +95,13 @@ class RenderMixin:
                         autodetect_units.append(section)
                     if isinstance(item.get("group"), (int, float)):
                         group_id = int(item["group"])
-                        group_refs[role].setdefault(group_id, []).append(section)
+                        group_refs[prefix].setdefault(group_id, []).append(section)
                         if isinstance(item.get("waypoints"), list) and item.get("waypoints"):
-                            group_has_routes[role].add(group_id)
+                            group_has_routes[prefix].add(group_id)
                     if source == "vessels":
                         blocks.extend(self.attached_aircraft(prefix, item, section, counts))
         for cluster, item in self.land_cluster_items(self.land_clusters()):
-            role = self.role(item); prefix = role_prefix(role)
+            role = self.role(item); prefix = self.taskforce_for(item)
             key = prefix + "LandUnit"
             result = self.land_section(prefix, counts[key] + 1, item)
             if result:
@@ -125,7 +123,7 @@ class RenderMixin:
                     if isinstance(member.get("group"), (int, float)):
                         group_id = int(member["group"])
                         if isinstance(member.get("waypoints"), list) and member.get("waypoints"):
-                            group_has_routes[role].add(group_id)
+                            group_has_routes[prefix].add(group_id)
                 if role != "friendly" and any(self.autodetect(member) for member in cluster):
                     autodetect_units.append(section)
                 blocks.extend(self.attached_aircraft(prefix, item, section, counts))
@@ -146,8 +144,8 @@ class RenderMixin:
             member_name = vessel.get("uniquename")
             if not leader_name or not member_name or member_name not in units or leader_name not in units:
                 continue
-            role = self.role(vessel)
-            key = (role, str(leader_name))
+            taskforce = self.taskforce_for(vessel)
+            key = (taskforce, str(leader_name))
             refs = leader_formations.setdefault(key, [])
             for ref in (units[str(leader_name)], units[str(member_name)]):
                 if ref not in refs:
@@ -157,13 +155,13 @@ class RenderMixin:
             lines.append(f"NumberOf{key}{suffix}={count}")
         group_names = {int(g.get("group_id")): str(g.get("name") or f"Group {g.get('group_id')}")
                        for g in self.data.get("groups", []) if isinstance(g, dict) and isinstance(g.get("group_id"), (int, float))}
-        for role, taskforce in (("friendly", "Taskforce1"), ("enemy", "Taskforce2")):
-            formations = [(gid, refs) for gid, refs in group_refs[role].items()
-                          if refs and gid not in group_has_routes[role] and gid not in random_group_ids[role]]
+        for taskforce in [prefix for prefix in taskforces if prefix != "Neutral"]:
+            formations = [(gid, refs) for gid, refs in group_refs[taskforce].items()
+                          if refs and gid not in group_has_routes[taskforce] and gid not in random_group_ids[taskforce]]
             linked = [(label, refs) for (formation_role, label), refs in leader_formations.items()
-                      if formation_role == role and len(refs) > 1]
+                      if formation_role == taskforce and len(refs) > 1]
             formations.extend((label, refs) for label, refs in linked)
-            for gid in sorted(group_has_routes[role] & set(group_refs[role])):
+            for gid in sorted(group_has_routes[taskforce] & set(group_refs[taskforce])):
                 self.warn(f"group {gid} in {taskforce} has unit routes; individual routes were preserved instead of a formation")
             if formations:
                 lines.append(f"{taskforce}_NumberOfFormations={len(formations)}")
@@ -178,6 +176,13 @@ class RenderMixin:
             self.warn("Fleet Command alliance declarations are not tactical Sea Power formations and were not copied")
         trigger_count = len(self.data.get("triggers_goals", [])) + (1 if intel and intel.lower() not in {"none", "none available", "not available", "n/a"} else 0) + len(set(autodetect_units))
         lines.append(f"NumberOfTriggers={trigger_count}")
+        side_taskforces = [prefix for prefix in taskforces if prefix != "Neutral"]
+        lines += ["[Sides]", *[f"Side{number}={prefix}" for number, prefix in enumerate(side_taskforces, 1)],
+                  f"Side{len(side_taskforces) + 1}=Neutral|Civilian", "[Relations]"]
+        lines.extend(f"Taskforce1,{enemy}=Hostile" for enemy in self.enemy_taskforce_prefixes)
+        for index, first in enumerate(self.enemy_taskforce_prefixes):
+            lines.extend(f"{first},{second}=Neutral" for second in self.enemy_taskforce_prefixes[index + 1:])
+        lines.extend(f"{prefix},Neutral=Neutral" for prefix in side_taskforces)
         lines += ["", *blocks]
         triggers, objectives = self.trigger_sections(units, autodetect_units)
         if triggers:
