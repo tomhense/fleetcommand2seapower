@@ -8,6 +8,12 @@ from typing import Any
 from ..generator_utils import ini_text, norm
 
 class ObjectiveMixin:
+    GENERIC_GOAL_FILTERS = {
+        "air", "aircraft", "fighter", "fighter attack", "fighterattack", "bomber",
+        "helicopter", "helo", "ship", "ships", "vessel", "sub", "submarine",
+        "asw", "surface", "land", "land unit", "land units",
+    }
+
     def goal_unit_type(self, goal: dict[str, Any]) -> str | None:
         """Map Fleet Command's goal class/name filters to Sea Power's unit type."""
         text = norm(" ".join(str(goal.get(key) or "") for key in ("class", "shipname", "tagname")))
@@ -19,7 +25,39 @@ class ObjectiveMixin:
             return "Submarine"
         if "ship" in text or "vessel" in text:
             return "Vessel"
+        if any(token in text for token in ("land unit", "building", "sam", "installation")):
+            return "LandUnit"
         return None
+
+    def goal_unit_types(self, goal: dict[str, Any]) -> list[str]:
+        """Resolve Fleet Command's target filters to exact Sea Power unit types."""
+        filters = [norm(goal.get(key)) for key in ("class", "shipname", "tagname") if norm(goal.get(key))]
+        specific_filters = [value for value in filters if value not in self.GENERIC_GOAL_FILTERS]
+        if not specific_filters:
+            return []
+        matches: list[str] = []
+        for source, folder in (("vessels", "vessels"), ("aircraft", "aircraft"), ("land_units", "land_units")):
+            items = self.data.get(source, [])
+            for item in items if isinstance(items, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                text = norm(" ".join(str(item.get(key) or "") for key in
+                                      ("name", "class", "shipname", "tagname", "variant")))
+                compact = text.replace(" ", "")
+                if not any(value in text or value.replace(" ", "") in compact for value in specific_filters):
+                    continue
+                definition = self.resolver.resolve(item, folder)
+                if definition and definition not in matches:
+                    matches.append(definition)
+        for item in self.objective_aircraft():
+            text = norm(" ".join(str(item.get(key) or "") for key in ("name", "class", "variant")))
+            compact = text.replace(" ", "")
+            if not any(value in text or value.replace(" ", "") in compact for value in specific_filters):
+                continue
+            definition = self.resolver.resolve(item, "aircraft")
+            if definition and definition not in matches:
+                matches.append(definition)
+        return matches
 
     def target_position(self, uniquename: str) -> dict[str, Any] | None:
         for source in ("vessels", "aircraft", "land_units"):
@@ -55,6 +93,7 @@ class ObjectiveMixin:
             goal_start = int(float(goal.get("starttime") or 0))
             time_goal = bool(re.search(r"\bend\s*mission\b|\bmission\s+over\b|\bquit\b|\bfail", name, re.IGNORECASE))
             all_enemy_aircraft = bool(re.search(r"hostile.*air|all.*air|air.*destroyed", name, re.IGNORECASE))
+            ctype = None
             child_sections = []
             for child in children_by_parent.get(int(float(goal.get("goalid") or -1)), []):
                 child_section = units.get(str(child.get("uniquename") or ""))
@@ -77,23 +116,24 @@ class ObjectiveMixin:
             elif goal_type in {0, 3} and goal.get("position") and (goal_type == 3 or goal.get("class") or goal.get("shipname") or goal.get("tagname")):
                 trigger_point = self.target_position(target) or dict(goal.get("position"))
                 trigger_point["altitude"] = 0
-                filtered_unit_goal = goal_type == 0 or goal.get("class") or goal.get("shipname") or goal.get("tagname")
-                if filtered_unit_goal:
-                    player_units = sorted({section for section in units.values() if section.startswith("Taskforce1")
-                                           and ("Aircraft" in section or "Helicopter" in section)})
-                else:
+                filtered_unit_goal = bool(goal.get("class") or goal.get("shipname") or goal.get("tagname"))
+                if not filtered_unit_goal:
                     player_units = sorted({section for section in units.values() if section.startswith("Taskforce1")})
                 condition = (f"Condition_Condition1_PositionNM={self.pos(trigger_point)}\n"
                              "Condition_Condition1_AreaRadiusNM=5\n"
                              "Condition_Condition1_AreaDisplaySide=None")
-                if player_units and not filtered_unit_goal:
+                if not filtered_unit_goal and player_units:
                     condition += f"\nCondition_Condition1_Units={','.join(player_units)}"
-                if player_units:
-                    condition += "\nCondition_Condition1_MinimumUnits=1"
-                    unit_type = self.goal_unit_type(goal)
-                    if filtered_unit_goal and unit_type:
-                        condition += ("\nCondition_Condition1_Taskforce=Taskforce1"
-                                      f"\nCondition_Condition1_UnitType={unit_type}")
+                condition += "\nCondition_Condition1_Taskforce=Taskforce1\nCondition_Condition1_MinimumUnits=1"
+                if filtered_unit_goal:
+                    unit_types = self.goal_unit_types(goal)
+                    if unit_types:
+                        condition += f"\nCondition_Condition1_UnitTypes={','.join(unit_types)}"
+                    elif unit_type := self.goal_unit_type(goal):
+                        condition += f"\nCondition_Condition1_UnitType={unit_type}"
+                        self.warn(f"goal {name!r} target filter could not be mapped to exact Sea Power unit types; using {unit_type}")
+                    else:
+                        self.warn(f"goal {name!r} target filter could not be mapped to exact Sea Power unit types")
                 ctype = "UnitsInTheArea"
             elif target_section:
                 condition = f"Condition_Condition1_Units={target_section}"
