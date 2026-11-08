@@ -20,6 +20,15 @@
         "Soviet Union": ["wp_sam_site_sa-2", "wp_sam_site_sa-3", "wp_sam_site_sa-10"],
         "*": ["nato_sam_skyguard"]
       }
+    },
+    {
+      "category": "vessels",
+      "match": {"shipname": ["Bunker Hill CG52", "Bunker Hill CG 52"]},
+      "country_map": {
+        "United States": ["usn_cg_bunker_hill"],
+        "USA": ["usn_cg_bunker_hill"],
+        "*": ["usn_cg_bunker_hill", "usn_cg_ticonderoga"]
+      }
     }
   ],
   "name_map": {
@@ -34,6 +43,24 @@
     "TU-22 Backfire": ["wp_tu-22m2"],
     "TU-142 Bear J": ["wp_tu-142m"],
     "Spruance DD": ["usn_dd_spruance"],
+    "Spruance VLS DD": ["usn_dd_spruance_vls", "usn_dd_spruance"],
+    "Spruance DD (VLS)": ["usn_dd_spruance_vls", "usn_dd_spruance"],
+    "Spruance VLS": ["usn_dd_spruance_vls", "usn_dd_spruance"],
+    "Bunker Hill CG": ["usn_cg_bunker_hill", "usn_cg_ticonderoga"],
+    "Victor III SSN": ["wp_ssn_victor3_imp", "wp_ssn_victor3"],
+    "Hatsuyuki DD": ["jmsdf_dd_hatsuyuki"],
+    "Hatsuyuki-class DD": ["jmsdf_dd_hatsuyuki"],
+    "Takatsuki DD": ["jmsdf_dd_takatsuki_84", "jmsdf_dd_takatsuki"],
+    "Takatsuki FRAM DD": ["jmsdf_dd_takatsuki_84", "jmsdf_dd_takatsuki"],
+    "Tachikaze DDG": ["jmsdf_ddg_tachikaze_84", "jmsdf_ddg_tachikaze"],
+    "Tachikaze FRAM DDG": ["jmsdf_ddg_tachikaze_84", "jmsdf_ddg_tachikaze"],
+    "Huangfeng PCFG": ["plan_ptg_type_021", "plan_ptg_type_024"],
+    "Type 021 PTG": ["plan_ptg_type_021"],
+    "Scud-B": ["wp_tbm_scud_b_tel"],
+    "SS-1C Scud-B": ["wp_tbm_scud_b_tel"],
+    "N22 Nomad": ["raaf_n22"],
+    "Searchmaster B": ["raaf_searchmaster_b"],
+    "Searchmaster L": ["raaf_searchmaster_l"],
     "Osa II PCFG": ["wp_ptg_osa2", "wp_ptg_osa1"],
     "AH-1 Cobra": ["usmc_ah-1t", "iriaf_ah-1j"],
     "AH-1W Cobra": ["usmc_ah-1t", "iriaf_ah-1j"],

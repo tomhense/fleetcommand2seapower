@@ -49,11 +49,15 @@ class Resolver:
                 continue
             names = match.get("name", [])
             classes = match.get("class", [])
+            shipnames = match.get("shipname", [])
             names = [names] if isinstance(names, str) else names
             classes = [classes] if isinstance(classes, str) else classes
+            shipnames = [shipnames] if isinstance(shipnames, str) else shipnames
             name_match = any(norm(value) == name_text for value in names) if names else False
             class_match = any(norm(value) in class_text for value in classes) if classes else False
-            if not (name_match or class_match):
+            shipname_text = norm(item.get("shipname"))
+            shipname_match = any(norm(value) == shipname_text for value in shipnames) if shipnames else False
+            if not (name_match or class_match or shipname_match):
                 continue
             country_map = rule.get("country_map", {})
             if not isinstance(country_map, dict):
