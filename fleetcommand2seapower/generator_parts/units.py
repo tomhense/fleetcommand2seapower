@@ -24,27 +24,20 @@ class UnitMixin:
         return all(all(part.replace(" ", "") in compact for part in filter_text.split()) for filter_text in filters)
 
     def objective_aircraft(self) -> list[dict[str, Any]]:
-        """Expose embarked aircraft selected by Fleet Command goal filters."""
+        """Find embarked aircraft selected by Fleet Command goal filters."""
         goals = [goal for goal in self.data.get("triggers_goals", [])
                  if isinstance(goal, dict) and int(float(goal.get("goaltype") or 0)) in {0, 3}]
         matches = [goal for goal in goals if goal.get("class") or goal.get("shipname") or goal.get("tagname")]
         if not matches:
             return []
         output: list[dict[str, Any]] = []
-        existing = [item for item in self.data.get("aircraft", []) if isinstance(item, dict)]
         for vessel in self.data.get("vessels", []) if isinstance(self.data.get("vessels"), list) else []:
             if not isinstance(vessel, dict) or self.role(vessel) != "friendly":
                 continue
             for attachment in vessel.get("aircraft", []) if isinstance(vessel.get("aircraft"), list) else []:
                 if not isinstance(attachment, dict) or not any(self.goal_aircraft_matches(attachment, goal) for goal in matches):
                     continue
-                if any(self.goal_aircraft_matches(item, goal) for item in existing for goal in matches):
-                    continue
-                clone = dict(attachment)
-                clone.update({"alliance_role": "friendly", "country": attachment.get("country") or vessel.get("country"),
-                              "position": dict(vessel.get("position") or {}),
-                              "uniquename": f"FleetCommand objective aircraft {len(output) + 1}"})
-                output.append(clone)
+                output.append(attachment)
         return output
 
     def section(self, prefix: str, index: int, item: dict[str, Any], source: str,
@@ -58,14 +51,26 @@ class UnitMixin:
                         "Submarine" if category == "submarine" else "Vessel")
         section = f"[{prefix}{section_type}{index}]"
         lines = [section, f"Type={definition}", "CrewSkill=Trained", f"RelativePositionInNM={self.pos(item.get('position'))}"]
+        reference = self.resolver.national_reference(item, definition, folder)
+        if folder == "vessels" and reference:
+            lines.insert(2, f"VariantReference={reference}")
         if source == "vessels" and item.get("aircraft"):
-            self.add_flight_deck(lines, item)
+            path = self.resolver.root / "vessels" / f"{definition}.ini"
+            try:
+                has_deck = bool(re.search(r"(?m)^\[FlightDeck\]\s*$", path.read_text(encoding="utf-8", errors="ignore")))
+            except OSError:
+                has_deck = False
+            if has_deck:
+                self.add_flight_deck(lines, item)
+                self.warn(f"aircraft attached to {item.get('uniquename')!r} remain internal to their base unit and were not spawned")
+            else:
+                self.warn(f"{definition} has no flight deck; aircraft aboard {item.get('uniquename')!r} cannot be represented")
         if category in {"aircraft", "helicopter"}:
             # Sea Power resolves aircraft loadout/flight behaviour through a
             # squadron reference. Leaving this implicit can cause a null
             # reference in the mission editor even when the aircraft type is
             # valid.
-            lines.insert(2, "SquadronReference=Default")
+            lines.insert(2, f"SquadronReference={reference or 'Default'}")
             lines.insert(3, "MissionType=NoMission")
         probability_chance: float | None = None
         group_id = item.get("group")
@@ -470,11 +475,8 @@ class UnitMixin:
         # Fleet Command vessel aircraft represent aircraft stored in the
         # ship's internal flight deck. Sea Power's standalone aircraft
         # sections represent units already launched, so do not spawn them.
-        attachments = item.get("aircraft") if isinstance(item.get("aircraft"), list) else []
         if self.is_airbase(item, ""):
             return blocks
-        if attachments:
-            self.warn(f"aircraft attached to {item.get('uniquename')!r} remain internal to their base unit and were not spawned")
         return blocks
 
     def corridor_aircraft(self, corridor: dict[str, Any], index: int) -> str:

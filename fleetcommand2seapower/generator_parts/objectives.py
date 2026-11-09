@@ -14,6 +14,25 @@ class ObjectiveMixin:
         "asw", "surface", "land", "land unit", "land units",
     }
 
+    def tasking_goal(self, goal: dict[str, Any], name: str) -> bool:
+        return (int(float(goal.get("goaltype") or 0)) == 3
+                and int(float(goal.get("messagetypeid") or 0)) == 1
+                and bool(goal.get("message"))
+                and not re.search(r"\bend\s*mission\b|\bmission\s+(?:over|incomplete)\b|\bquit\b|\bfail", name, re.IGNORECASE))
+
+    def goal_has_message(self, goal: dict[str, Any]) -> bool:
+        name = str(goal.get("goalname") or "")
+        return bool(goal.get("message")) and (self.tasking_goal(goal, name) or
+                                                int(float(goal.get("goaltype") or 0)) == 0)
+
+    def goal_message(self, goal: dict[str, Any]) -> str:
+        if (int(float(goal.get("goaltype") or 0)) == 0 and goal.get("position")
+                and any(goal.get(key) for key in ("class", "shipname", "tagname"))):
+            # An area condition only establishes presence in the area; the
+            # source message may describe actions we cannot represent.
+            return "Units have reached the objective area."
+        return ini_text(goal.get("message"))
+
     def goal_unit_type(self, goal: dict[str, Any]) -> str | None:
         """Map Fleet Command's goal class/name filters to Sea Power's unit type."""
         text = norm(" ".join(str(goal.get(key) or "") for key in ("class", "shipname", "tagname")))
@@ -95,7 +114,9 @@ class ObjectiveMixin:
             # its second field is the failure penalty.
             reward = max(0, points)
             penalty = points if points < 0 else -5
-            objectives.append(f"{objective_id}={reward},{penalty},Complete,Main")
+            is_tasking = self.tasking_goal(goal, name)
+            if not is_tasking:
+                objectives.append(f"{objective_id}={reward},{penalty},Complete,Main")
             target = str(goal.get("uniquename") or "")
             target_section = units.get(target)
             goal_type_value = goal.get("goaltype")
@@ -110,7 +131,14 @@ class ObjectiveMixin:
                 child_section = units.get(str(child.get("uniquename") or ""))
                 if child_section and child_section not in child_sections:
                     child_sections.append(child_section)
-            if target_section and goal_type == 2:
+            if is_tasking:
+                # Fleet Command goal times use seconds since midnight; Sea
+                # Power's Time condition counts seconds since mission start.
+                start_hour = int(float(self.data.get("metadata", {}).get("timeofday") or 0)) % 24
+                elapsed = max(1, goal_start - start_hour * 3600)
+                condition = f"Condition_Condition1_Time={elapsed}"
+                ctype = "Time"
+            elif target_section and goal_type == 2:
                 condition = f"Condition_Condition1_Units={target_section}"
                 ctype = "UnitDestroyed"
                 if float(goal.get("damage") or 100) < 95:
@@ -167,8 +195,12 @@ class ObjectiveMixin:
                 condition = f"Condition_Condition1_Time={max(1, goal_start)}"
                 ctype = "Time"
                 if target: self.warn(f"goal {name!r} target {target!r} was not emitted or could not be linked")
-            lines = [f"[Trigger{n}]", f"Name={name}", f"Action_ObjectivesCompleted={objective_id}"]
-            if goal_type == 3:
+            lines = [f"[Trigger{n}]", f"Name={name}"]
+            if not is_tasking:
+                lines.append(f"Action_ObjectivesCompleted={objective_id}")
+            if self.goal_has_message(goal):
+                lines.append(f"Action_Taskforce1_Message=Taskforce1Goal{n}Message")
+            if goal_type == 3 and not is_tasking:
                 victory = "Taskforce1" if re.search(r"mission\s+over", name, re.IGNORECASE) else ("Taskforce2" if time_goal else "Taskforce1")
                 lines += ["Action_EndMission=True", f"Action_Victory={victory}"]
             if condition_types:

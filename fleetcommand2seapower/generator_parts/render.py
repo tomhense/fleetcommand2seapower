@@ -16,8 +16,11 @@ class RenderMixin:
         tasking = ini_text(meta.get("taskingmessage"))
         intel = ini_text(meta.get("intelmessage"))
         objective_labels = [f"Objective_{objective_id}={name}" for objective_id, name in self.objective_labels()]
+        goal_messages = [f"Taskforce1Goal{number}Message={ini_text(goal.get('goalname') or f'Goal {number}').replace('|', ' ')}|{self.goal_message(goal).replace('|', ' ')}|Acknowledge"
+                         for number, goal in enumerate(self.data.get("triggers_goals", []), 1)
+                         if self.goal_has_message(goal)]
         lines = ["[General]", "Type=Scenario", "", "[Language_en]", f"Name={title}", f"Description={description}",
-                 *objective_labels]
+                 *objective_labels, *goal_messages]
         if tasking:
             lines.append(f"Taskforce1StartMessage={tasking}|Begin mission")
         if intel and intel.lower() not in {"none", "none available", "not available", "n/a"}:
@@ -49,7 +52,6 @@ class RenderMixin:
         random_group_emitted: set[tuple[str, int]] = set()
         random_group_ids: dict[str, set[int]] = {prefix: set() for prefix in taskforces}
         aircraft_items = list(self.data.get("aircraft", [])) if isinstance(self.data.get("aircraft"), list) else []
-        aircraft_items.extend(self.objective_aircraft())
         for source in ("vessels", "aircraft"):
             source_items = aircraft_items if source == "aircraft" else self.data.get(source, [])
             for item in source_items if isinstance(source_items, list) else []:

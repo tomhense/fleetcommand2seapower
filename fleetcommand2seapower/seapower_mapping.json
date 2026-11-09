@@ -2,6 +2,16 @@
   "description": "Fleet Command names and classes mapped to Sea Power unit definition stems. Values are tried in order; the first existing definition wins.",
   "conditional_map": [
     {
+      "category": "aircraft",
+      "match": {"name": ["Badger Gen", "TU-16 Badger"]},
+      "country_map": {"China": ["pla_h-6a", "pla_h-6d", "wp_tu-16"]}
+    },
+    {
+      "category": "vessels",
+      "match": {"name": ["Supply AOE"]},
+      "country_map": {"India": ["wp_vt_boris_chilikin", "usn_aoe_sacramento"]}
+    },
+    {
       "category": "land_units",
       "match": {"name": ["Airport", "Airbase"], "class": ["AIRPORT", "AIRBASE"]},
       "country_map": {
@@ -89,6 +99,8 @@
     "Grisha V FFL": ["wp_mpk_grisha3"],
     "Udaloy DDG": ["wp_bpk_udaloy"],
     "Kilo SSK": ["wp_ss_kilo"],
+    "Foxtrot SS": ["wp_ss_foxtrot"],
+    "Magar LST": ["wp_bdk_ropucha", "wp_bdk_alligator", "plan_lst_yukan"],
     "Kara CG": ["wp_bpk_kara"],
     "Slava CG": ["wp_rkr_slava"],
     "Kirov CGN": ["wp_rkr_kirov"],
@@ -238,7 +250,6 @@
     "Spain": "es",
     "Iran": "ir",
     "Israel": "ins",
-    "India": "pns",
     "Pakistan": "pns",
     "North Vietnam": "nv",
     "Vietnam": "nv",

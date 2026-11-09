@@ -21,6 +21,64 @@ class Resolver:
             for category in ("aircraft", "vessels", "land_units", "biologic")
         }
         self.all_files = set().union(*self.files.values())
+        self._variant_cache: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        self._vessel_names: dict[str, dict[str, str]] | None = None
+
+    def national_reference(self, item: dict[str, Any], definition: str, category: str) -> str | None:
+        """Select an available national variant or squadron for a mapped unit."""
+        country = norm(item.get("country"))
+        aliases = {"united states": "us", "usa": "us", "ussr": "soviet",
+                   "soviet union": "soviet", "russia": "soviet", "united kingdom": "uk"}
+        country = aliases.get(country, country)
+        if not country:
+            return None
+        suffix = "variants" if category == "vessels" else "squadrons"
+        key = (definition, category)
+        if key not in self._variant_cache:
+            path = self.root / category / f"{definition}_{suffix}.ini"
+            try:
+                contents = path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                contents = ""
+            entries: list[tuple[str, str]] = []
+            for match in re.finditer(r"(?ms)^\[(Default|Variant\d+|Squadron\d+)\][^\n]*\n(.*?)(?=^\[|\Z)", contents):
+                nation = re.search(r"(?m)^\s*Nation\s*=\s*([^/\r\n#]+)", match.group(2))
+                if nation:
+                    value = norm(nation.group(1))
+                    entries.append((match.group(1), aliases.get(value, value)))
+            self._variant_cache[key] = entries
+        entries = self._variant_cache[key]
+        matching = [ref for ref, nation in entries if nation == country]
+        if not matching:
+            return None
+        if category == "vessels" and item.get("shipname"):
+            if self._vessel_names is None:
+                self._vessel_names = {}
+                path = self.root / "language_en" / "vessel_names.ini"
+                try:
+                    contents = path.read_text(encoding="utf-8-sig", errors="replace")
+                except OSError:
+                    contents = ""
+                for match in re.finditer(r"(?ms)^\[([^\]]+)\][^\n]*\n(.*?)(?=^\[|\Z)", contents):
+                    self._vessel_names[match.group(1)] = dict(re.findall(r"(?m)^(Default|Variant\d+)\s*=\s*([^\r\n#]+)", match.group(2)))
+            names = self._vessel_names.get(definition, {})
+            source = norm(item["shipname"])
+            source_numbers = set(re.findall(r"\d+", source))
+            for ref in matching:
+                label = names.get(ref, "")
+                if not label:
+                    continue
+                label_numbers = set(re.findall(r"\d+", norm(label)))
+                if source_numbers and source_numbers & label_numbers:
+                    return ref
+                parts = [norm(part) for part in label.split(",") if norm(part)]
+                if any(len(part) >= 4 and part in source for part in parts):
+                    return ref
+            if "Default" not in matching:
+                self.warn(f"no exact {country} variant for {item['shipname']!r} on {definition}; using {matching[0]}")
+        # Default already uses this nation; otherwise select a national
+        # variant even if the individual ship is unavailable.
+        return "Default" if "Default" in matching else matching[0]
 
     def land_origin(self, item: dict[str, Any]) -> str:
         """Infer the operator of generic Fleet Command installations."""
