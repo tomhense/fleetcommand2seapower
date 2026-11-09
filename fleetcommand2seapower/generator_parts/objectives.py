@@ -27,32 +27,42 @@ class ObjectiveMixin:
             return "Vessel"
         if any(token in text for token in ("land unit", "building", "sam", "installation")):
             return "LandUnit"
-        return None
+        categories: set[str] = set()
+        category_map = {"aircraft": "Aircraft", "helicopter": "Helicopter",
+                        "submarine": "Submarine", "vessel": "Vessel"}
+        for source in ("vessels", "aircraft", "land_units"):
+            for item in self.data.get(source, []) if isinstance(self.data.get(source), list) else []:
+                if isinstance(item, dict) and self.goal_filter_matches(goal, item):
+                    category = "LandUnit" if source == "land_units" else category_map.get(self.category(item, source))
+                    if category:
+                        categories.add(category)
+        return next(iter(categories)) if len(categories) == 1 else None
 
-    def goal_unit_types(self, goal: dict[str, Any]) -> list[str]:
-        """Resolve Fleet Command's target filters to exact Sea Power unit types."""
+    def goal_filter_matches(self, goal: dict[str, Any], item: dict[str, Any]) -> bool:
         filters = [norm(goal.get(key)) for key in ("class", "shipname", "tagname") if norm(goal.get(key))]
         specific_filters = [value for value in filters if value not in self.GENERIC_GOAL_FILTERS]
         if not specific_filters:
+            return False
+        text = norm(" ".join(str(item.get(key) or "") for key in
+                              ("name", "class", "shipname", "tagname", "variant")))
+        compact = text.replace(" ", "")
+        return any(value in text or value.replace(" ", "") in compact for value in specific_filters)
+
+    def goal_unit_types(self, goal: dict[str, Any]) -> list[str]:
+        """Resolve Fleet Command's target filters to exact Sea Power unit types."""
+        if not any(norm(goal.get(key)) for key in ("class", "shipname", "tagname")):
             return []
         matches: list[str] = []
         for source, folder in (("vessels", "vessels"), ("aircraft", "aircraft"), ("land_units", "land_units")):
             items = self.data.get(source, [])
             for item in items if isinstance(items, list) else []:
-                if not isinstance(item, dict):
-                    continue
-                text = norm(" ".join(str(item.get(key) or "") for key in
-                                      ("name", "class", "shipname", "tagname", "variant")))
-                compact = text.replace(" ", "")
-                if not any(value in text or value.replace(" ", "") in compact for value in specific_filters):
+                if not isinstance(item, dict) or not self.goal_filter_matches(goal, item):
                     continue
                 definition = self.resolver.resolve(item, folder)
                 if definition and definition not in matches:
                     matches.append(definition)
         for item in self.objective_aircraft():
-            text = norm(" ".join(str(item.get(key) or "") for key in ("name", "class", "variant")))
-            compact = text.replace(" ", "")
-            if not any(value in text or value.replace(" ", "") in compact for value in specific_filters):
+            if not self.goal_filter_matches(goal, item):
                 continue
             definition = self.resolver.resolve(item, "aircraft")
             if definition and definition not in matches:
@@ -125,7 +135,10 @@ class ObjectiveMixin:
                 filtered_unit_goal = bool(goal.get("class") or goal.get("shipname") or goal.get("tagname"))
                 if not filtered_unit_goal:
                     player_units = sorted({section for section in units.values() if section.startswith("Taskforce1")})
-                condition = (f"Condition_Condition1_PositionNM={self.pos(trigger_point)}\n"
+                # Geo coordinates match current editor saves and remain stable
+                # with Sea Power's globe/LCC map projection.
+                condition = (f"Condition_Condition1_PositionNM=geo,{float(trigger_point.get('latitude', self.center_lat)):.6f},"
+                             f"{float(trigger_point.get('longitude', self.center_lon)):.6f},0\n"
                              "Condition_Condition1_AreaRadiusNM=5\n"
                              "Condition_Condition1_AreaDisplaySide=None")
                 if not filtered_unit_goal and player_units:
@@ -133,9 +146,14 @@ class ObjectiveMixin:
                 condition += "\nCondition_Condition1_Taskforce=Taskforce1\nCondition_Condition1_MinimumUnits=1"
                 if filtered_unit_goal:
                     unit_types = self.goal_unit_types(goal)
+                    unit_type = self.goal_unit_type(goal)
                     if unit_types:
+                        # The mission editor stores the broad category and
+                        # exact definition filter together on area conditions.
+                        if unit_type:
+                            condition += f"\nCondition_Condition1_UnitType={unit_type}"
                         condition += f"\nCondition_Condition1_UnitTypes={','.join(unit_types)}"
-                    elif unit_type := self.goal_unit_type(goal):
+                    elif unit_type:
                         condition += f"\nCondition_Condition1_UnitType={unit_type}"
                         self.warn(f"goal {name!r} target filter could not be mapped to exact Sea Power unit types; using {unit_type}")
                     else:

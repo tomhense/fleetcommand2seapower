@@ -161,7 +161,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("GeoPosition=-1.42040270,123.39540434,low", rendered)
         self.assertNotIn("Taskforce2_Formation1=", rendered)
         self.assertGreaterEqual(rendered.count("Waypoints="), 8)
-        self.assertIn("Condition_Condition1_PositionNM=183.6635,0.0000,58.5288", rendered)
+        self.assertIn("Condition_Condition1_PositionNM=geo,-1.240355,123.107449,0", rendered)
         self.assertIn("SpawnChance=0.500", rendered)
         self.assertIn("RelativePositionInNM=200.2212,2500.0000,49.4711\nHeading=0.00\nTelegraph=2", rendered)
         self.assertIn("[Trigger10]\nName=End mission.\nAction_ObjectivesCompleted=End_mission\nAction_EndMission=True\nAction_Victory=Taskforce2\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=54000", rendered)
