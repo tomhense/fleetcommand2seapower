@@ -10,9 +10,8 @@ from typing import Any
 from ..generator_utils import ini_text, norm, role_prefix
 
 class UnitMixin:
-    # Land definitions often have ground pads/selection visuals extending
-    # beyond their physical colliders.  Reserve extra space for those meshes.
-    LAND_GROUND_FOOTPRINT_FACTOR = 2.0
+    # Sea Power's model coordinates use 100 metres per unit.
+    LAND_MODEL_UNIT_NM = 100.0 / 1852
 
     def goal_aircraft_matches(self, aircraft: dict[str, Any], goal: dict[str, Any]) -> bool:
         filters = [str(goal.get(key) or "") for key in ("class", "shipname", "tagname")]
@@ -250,6 +249,39 @@ class UnitMixin:
                 grouped.setdefault((self.taskforce_for(item), kind), []).append(item)
             else:
                 clusters.append([item])
+        # A large airbase already represents nearby minor airport buildings.
+        # Keep the airbase as the representative so its position and roster
+        # survive, and never absorb SAMs or buildings from another taskforce.
+        bases = [cluster for cluster in clusters if isinstance(cluster[0], dict)
+                 and self.is_airbase(cluster[0], "")]
+        def compatible(first: dict[str, Any], second: dict[str, Any]) -> bool:
+            first_origin = norm(self.resolver.land_origin(first))
+            second_origin = norm(self.resolver.land_origin(second))
+            return not first_origin or not second_origin or first_origin == second_origin
+        # Large airbases already include their own buildings. Absorb dense
+        # groups around them, but keep explicitly targeted buildings separate.
+        targets = {str(goal.get("uniquename")) for goal in self.data.get("triggers_goals", [])
+                   if isinstance(goal, dict) and goal.get("uniquename")}
+        for key, candidates in grouped.items():
+            if key[1] != "building":
+                continue
+            assignments: dict[int, list[dict[str, Any]]] = {}
+            for item in candidates:
+                if str(item.get("uniquename") or "") in targets:
+                    continue
+                nearby = [base for base in bases if self.taskforce_for(base[0]) == key[0]
+                          and compatible(base[0], item)
+                          and self.land_distance(base[0], item) <= self.AIRBASE_BUILDING_RADIUS_NM]
+                if nearby:
+                    base = min(nearby, key=lambda candidate: self.land_distance(candidate[0], item))
+                    assignments.setdefault(id(base), []).append(item)
+            absorbed: set[int] = set()
+            for base in bases:
+                members = assignments.get(id(base), [])
+                if len(members) >= self.AIRBASE_MIN_BUILDINGS:
+                    base.extend(members)
+                    absorbed.update(id(item) for item in members)
+            grouped[key] = [item for item in candidates if id(item) not in absorbed]
         for (_, _), candidates in grouped.items():
             radius = self.SAM_CLUSTER_RADIUS_NM if candidates and self.land_cluster_kind(candidates[0]) == "sam" else self.LAND_CLUSTER_RADIUS_NM
             # Complete-linkage clustering: every member must be close to all
@@ -260,7 +292,11 @@ class UnitMixin:
             grouped_candidates: list[list[dict[str, Any]]] = []
             for item in candidates:
                 for cluster in grouped_candidates:
-                    if all(self.land_distance(item, other) <= radius for other in cluster):
+                    if (str(item.get("uniquename") or "") in targets
+                            or any(str(other.get("uniquename") or "") in targets for other in cluster)):
+                        continue
+                    if all(compatible(item, other) and self.land_distance(item, other) <= radius
+                           for other in cluster):
                         cluster.append(item)
                         break
                 else:
@@ -272,9 +308,9 @@ class UnitMixin:
         """Build renderable representatives, retaining merged source members."""
         result: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
         for cluster in clusters:
-            item = cluster[0]
-            if len(cluster) > 1:
-                item = dict(item)
+            item = dict(cluster[0])
+            item["position"] = dict(item.get("position") or {})
+            if len(cluster) > 1 and not self.is_airbase(item, ""):
                 points = [member.get("position") or {} for member in cluster]
                 item["position"] = {
                     "latitude": sum(float(point.get("latitude", self.center_lat)) for point in points) / len(points),
@@ -285,66 +321,25 @@ class UnitMixin:
         self.arrange_land_items(result)
         return result
 
-    def collision_radius_nm(self, item: dict[str, Any]) -> float | None:
-        """Read a land definition's [coll_selection] footprint in nautical miles.
+    def collision_boxes_nm(self, item: dict[str, Any]) -> list[tuple[float, float, float, float, float]]:
+        """Read rotated horizontal colliders in nautical miles.
 
-        Sea Power's scenario positions use metres (60 map units per NM), while
-        the definition dimensions are model metres.  A bounding circle is used
-        here deliberately: it remains safe when the unit's heading rotates the
-        rectangular selection box.
+        Airport definitions contain several physical colliders instead of a
+        single selection box. Keeping them separate avoids enclosing the whole
+        airfield in a large circle or square.
         """
         definition = self.resolver.resolve(item, "land_units")
-        if self.land_cluster_kind(item) not in {"building", "sam"} and not self.is_airbase(item, definition or ""):
-            return None
-        root = getattr(self.resolver, "root", None)
-        path = root / "land_units" / f"{definition}.ini" if root and definition else None
-        if path is None or not path.is_file():
-            return None
+        airbase = self.is_airbase(item, definition or "")
+        if not definition or (self.land_cluster_kind(item) not in {"building", "sam"} and not airbase):
+            return []
+        path = self.resolver.root / "land_units" / f"{definition}.ini"
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            text = path.read_text(encoding="utf-8-sig", errors="ignore")
         except OSError:
-            return None
-        match = re.search(r"(?ms)^\[coll_selection\]\s*(.*?)(?=^\[|\Z)", text)
-        if not match:
-            # Some composite installations do not define a selection box.
-            # Use the outermost physical collider instead of treating them as
-            # zero-sized; this covers warehouse and airbase-style definitions.
-            collider_radii: list[float] = []
-            for collider in re.finditer(r"(?ms)^\[(coll_[^\]]+)\]\s*(.*?)(?=^\[|\Z)", text):
-                section = collider.group(2)
-                kind = re.search(r"(?m)^Collider=\s*(\w+)", section)
-                position = re.search(r"(?m)^Position=\s*([-+.0-9eE]+)\s*,\s*[-+.0-9eE]+\s*,\s*([-+.0-9eE]+)", section)
-                scale = re.search(r"(?m)^Scale=\s*([-+.0-9eE]+)\s*,\s*[-+.0-9eE]+\s*,\s*([-+.0-9eE]+)", section)
-                if not kind or not position or not scale:
-                    continue
-                try:
-                    offset = math.hypot(float(position.group(1)), float(position.group(2)))
-                    dimensions = (float(scale.group(1)), float(scale.group(2)))
-                except ValueError:
-                    continue
-                if kind.group(1).lower() == "sphere":
-                    radius = max(abs(dimensions[0]), abs(dimensions[1])) + offset
-                else:
-                    radius = math.hypot(abs(dimensions[0]), abs(dimensions[1])) / 2 + offset
-                collider_radii.append(radius)
-            if collider_radii:
-                return max(collider_radii) * self.LAND_GROUND_FOOTPRINT_FACTOR / 1852
-            # A number of small installations have no selection collider in
-            # their definition.  Their authoritative footprint is still
-            # available in the general Length/Beam fields.
-            dimensions = [re.search(rf"(?m)^{name}=\s*([-+.0-9eE]+)", text)
-                          for name in ("Length", "Beam")]
-            if not all(dimensions):
-                return None
-            try:
-                return (math.hypot(float(dimensions[0].group(1)), float(dimensions[1].group(1)))
-                        * self.LAND_GROUND_FOOTPRINT_FACTOR / (2 * 1852))
-            except (AttributeError, ValueError):
-                return None
-        section = match.group(1)
+            return []
 
-        def vector(name: str) -> tuple[float, float, float] | None:
-            value = re.search(rf"(?m)^{name}=\s*([-+.0-9eE]+)\s*,\s*([-+.0-9eE]+)\s*,\s*([-+.0-9eE]+)", section)
+        def vector(section: str, name: str) -> tuple[float, float, float] | None:
+            value = re.search(rf"(?m)^\s*{name}\s*=\s*([-+.0-9eE]+)\s*,\s*([-+.0-9eE]+)\s*,\s*([-+.0-9eE]+)", section)
             if not value:
                 return None
             try:
@@ -352,49 +347,102 @@ class UnitMixin:
             except ValueError:
                 return None
 
-        scale = vector("Scale")
-        position = vector("Position") or (0.0, 0.0, 0.0)
-        if not scale:
-            return None
-        half_diagonal = math.hypot(abs(scale[0]), abs(scale[2])) / 2
-        return ((half_diagonal + math.hypot(position[0], position[2]))
-                * self.LAND_GROUND_FOOTPRINT_FACTOR / 1852)
+        sections = list(re.finditer(r"(?ms)^\[(coll_[^\]]+)\]\s*(.*?)(?=^\[|\Z)", text))
+        if airbase:
+            physical = [section for section in sections if not section.group(1).lower().startswith(
+                ("coll_selection", "coll_raycast", "coll_area"))]
+            selections = [section for section in sections if section.group(1).lower().startswith("coll_selection")]
+            sections = physical or selections
+        else:
+            selection = [section for section in sections if section.group(1).lower() == "coll_selection"]
+            if selection:
+                sections = selection
+            else:
+                sections = [section for section in sections if not section.group(1).lower().startswith(
+                    ("coll_selection", "coll_raycast", "coll_area"))]
+        heading = math.radians(float(item.get("course") or 0))
+        right = (math.cos(heading), -math.sin(heading))
+        forward = (math.sin(heading), math.cos(heading))
+        factor = self.LAND_MODEL_UNIT_NM
+        boxes = []
+        for match in sections:
+            section = match.group(2)
+            scale = vector(section, "Scale")
+            position = vector(section, "Position") or (0.0, 0.0, 0.0)
+            rotation = vector(section, "Rotation") or (0.0, 0.0, 0.0)
+            if not scale or not scale[0] or not scale[2]:
+                continue
+            east = (position[0] * right[0] + position[2] * forward[0]) * factor
+            north = (position[0] * right[1] + position[2] * forward[1]) * factor
+            boxes.append((abs(scale[0]) * factor / 2, abs(scale[2]) * factor / 2,
+                          east, north, heading + math.radians(rotation[1])))
+        if not boxes:
+            dimensions = [re.search(rf"(?m)^\s*{name}\s*=\s*([-+.0-9eE]+)", text)
+                          for name in ("Beam", "Length")]
+            if all(dimensions):
+                try:
+                    boxes.append((abs(float(dimensions[0].group(1))) / 3704,
+                                  abs(float(dimensions[1].group(1))) / 3704, 0, 0, heading))
+                except ValueError:
+                    pass
+        return boxes
+
+    @staticmethod
+    def land_boxes_overlap(first: tuple[float, float, tuple], second: tuple[float, float, tuple], gap: float) -> bool:
+        """Test rotated rectangles on both boxes' separating axes."""
+        def unpack(entry):
+            east, north, (width, length, offset_east, offset_north, angle) = entry
+            right = (math.cos(angle), -math.sin(angle))
+            forward = (math.sin(angle), math.cos(angle))
+            return (east + offset_east, north + offset_north), right, forward, width, length
+        a, ar, af, aw, al = unpack(first)
+        b, br, bf, bw, bl = unpack(second)
+        delta = (b[0] - a[0], b[1] - a[1])
+        dot = lambda u, v: u[0] * v[0] + u[1] * v[1]
+        for axis in (ar, af, br, bf):
+            extent_a = aw * abs(dot(ar, axis)) + al * abs(dot(af, axis))
+            extent_b = bw * abs(dot(br, axis)) + bl * abs(dot(bf, axis))
+            if abs(dot(delta, axis)) >= extent_a + extent_b + gap:
+                return False
+        return True
 
     def arrange_land_items(self, items: list[tuple[list[dict[str, Any]], dict[str, Any]]]) -> None:
-        """Nudge installation representatives until selection footprints clear."""
-        footprints = [(item, self.collision_radius_nm(item)) for _, item in items]
-        # A small gap avoids touching collider edges and makes the layout less
-        # sensitive to floating-point rounding in the game/editor.
-        gap_nm = 2.0 / 1852
-        largest_radius = max((radius or 0 for _, radius in footprints), default=0)
-        if not largest_radius:
-            return
-        grid_step = largest_radius * 2 + gap_nm
+        """Move overlapping installations by the smallest local grid offset."""
+        footprints = [(item, self.collision_boxes_nm(item)) for _, item in items]
+        footprints = [(item, boxes) for item, boxes in footprints if boxes]
+        footprints.sort(key=lambda entry: (self.is_airbase(entry[0], ""),
+                                           sum(box[0] * box[1] for box in entry[1])), reverse=True)
+        gap = 2.0 / 1852
         scale = 60 * math.cos(math.radians(self.center_lat))
-        placed: list[tuple[dict[str, Any], float]] = []
-        # A deterministic square-spiral candidate list gives every item a
-        # position that is clear of all earlier items.  Unlike pairwise
-        # repulsion, it cannot finish with an old overlap reintroduced by a
-        # later correction in a dense installation cluster.
-        candidates = [(x, z) for x in range(-12, 13) for z in range(-12, 13)]
-        candidates.sort(key=lambda offset: (offset[0] * offset[0] + offset[1] * offset[1], offset[0], offset[1]))
-        for item, radius in footprints:
-            if radius is None:
-                continue
+        if abs(scale) < 1e-9:
+            return
+        placed: list[tuple[float, float, list[tuple]]] = []
+        offsets: list[tuple[int, int]] | None = None
+        def clear(east: float, north: float, boxes: list[tuple]) -> bool:
+            return all(not self.land_boxes_overlap((east, north, box), (other_east, other_north, other_box), gap)
+                       for other_east, other_north, other_boxes in placed
+                       for box in boxes for other_box in other_boxes)
+        for item, boxes in footprints:
             point = item.setdefault("position", {})
             origin_east = (float(point.get("longitude", self.center_lon)) - self.center_lon) * scale
             origin_north = (float(point.get("latitude", self.center_lat)) - self.center_lat) * 60
-            for grid_x, grid_z in candidates:
-                east = origin_east + grid_x * grid_step
-                north = origin_north + grid_z * grid_step
-                if all(math.hypot(east - other_east, north - other_north) >= radius + other_radius + gap_nm
-                       for other, other_radius in placed
-                       for other_east, other_north in [((float(other.get("position", {}).get("longitude", self.center_lon)) - self.center_lon) * scale,
-                                                       (float(other.get("position", {}).get("latitude", self.center_lat)) - self.center_lat) * 60)]):
+            if clear(origin_east, origin_north, boxes):
+                placed.append((origin_east, origin_north, boxes))
+                continue
+            step = 0.025
+            if offsets is None:
+                offsets = [(x, z) for x in range(-80, 81) for z in range(-80, 81)]
+                offsets.sort(key=lambda p: (p[0] * p[0] + p[1] * p[1], p[0], p[1]))
+            for x, z in offsets:
+                east, north = origin_east + x * step, origin_north + z * step
+                if clear(east, north, boxes):
                     point["longitude"] = self.center_lon + east / scale
                     point["latitude"] = self.center_lat + north / 60
-                    placed.append((item, radius))
+                    placed.append((east, north, boxes))
                     break
+            else:
+                self.warn(f"could not separate land installation {item.get('uniquename') or item.get('name')!r} within {80 * step:.2f} NM")
+                placed.append((origin_east, origin_north, boxes))
 
     def land_distance(self, first: dict[str, Any], second: dict[str, Any]) -> float:
         """Return the horizontal distance between two land records in NM."""

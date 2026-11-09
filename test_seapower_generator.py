@@ -20,19 +20,24 @@ from fleetcommand2seapower.seapower_generator import Generator, Resolver
 
 ROOT = Path(__file__).parent
 ASSETS = default_streaming_assets()
+if not ASSETS.is_dir():
+    ASSETS = ROOT / "SeaPower_StreamingAssets" / "original"
+SCENARIOS = default_scenario_dir()
+if not SCENARIOS.is_dir():
+    SCENARIOS = ROOT / "FleetCommand_scenarios"
 MAPPING = ROOT / "fleetcommand2seapower" / "seapower_mapping.json"
 
 
-@unittest.skipUnless(default_scenario_dir().is_dir() and ASSETS.is_dir(), "Fleet Command and Sea Power Steam fixtures are not installed")
+@unittest.skipUnless(SCENARIOS.is_dir() and ASSETS.is_dir(), "Fleet Command and Sea Power Steam fixtures are not installed")
 class SeaPowerGeneratorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.resolver = Resolver(ASSETS, MAPPING, lambda _: None)
-        cls.sources = sorted(path for path in (default_scenario_dir()).iterdir()
+        cls.sources = sorted(path for path in SCENARIOS.iterdir()
                              if path.suffix.lower() in {".scs", ".sct", ".scm", ".scc"})
 
     def test_generator_accepts_converter_json_string_intermediate(self) -> None:
-        source = default_scenario_dir() / " Single06.scs"
+        source = SCENARIOS / " Single06.scs"
         converted_json = converter_json(source)
         rendered = Generator(json.loads(converted_json), self.resolver).render()
         self.assertIn("[Mission]", rendered)
@@ -61,7 +66,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
                         self.assertIn(option, available)
 
     def test_coordinate_center_is_preserved(self) -> None:
-        data = parse(default_scenario_dir() / " Single04.scs")
+        data = parse(SCENARIOS / " Single04.scs")
         generator = Generator(data, self.resolver)
         rendered = generator.render()
         self.assertIn("MapCenterLatitude=-2.215835", rendered)
@@ -133,7 +138,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("Action_UnitRevealToTaskforce=Taskforce1|Identify", rendered)
 
     def test_parser_normalizes_autodetect_to_boolean(self) -> None:
-        data = parse(default_scenario_dir() / " Single06.scs")
+        data = parse(SCENARIOS / " Single06.scs")
         values = [item["autodetect"] for item in data["land_units"] if "autodetect" in item]
         self.assertIn(True, values)
         self.assertIn(False, values)
@@ -154,7 +159,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertEqual(rendered.count("# FleetCommandMergedLandUnits="), 2)
 
     def test_pirate_conversion_keeps_embarked_aircraft_internal(self) -> None:
-        data = parse(default_scenario_dir() / " Single04.scs")
+        data = parse(SCENARIOS / " Single04.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertIn("NumberOfTaskforce1Helicopters=0", rendered)
         self.assertNotIn("[Taskforce1Helicopter", rendered)
@@ -167,7 +172,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("[Trigger10]\nName=End mission.\nAction_ObjectivesCompleted=End_mission\nAction_EndMission=True\nAction_Victory=Taskforce2\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=54000", rendered)
 
     def test_pirate_probability_group_is_runtime_random(self) -> None:
-        data = parse(default_scenario_dir() / " Single04.scs")
+        data = parse(SCENARIOS / " Single04.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertIn("NumberOfTaskforce1Vessels=1", rendered)
         self.assertIn("[Taskforce1Vessel1]", rendered)
@@ -179,7 +184,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertNotIn("Taskforce1_Formation1=", rendered)
 
     def test_single01_preserves_probabilities_decks_and_formation(self) -> None:
-        data = parse(default_scenario_dir() / " Single01.scs")
+        data = parse(SCENARIOS / " Single01.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertEqual(rendered.count("[NeutralAircraft"), 6)
         self.assertEqual(rendered.count("SpawnChance=0.200"), 5)
@@ -198,21 +203,21 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("Taskforce1IntelMessage=Intel|New intelligence received|Acknowledge", rendered)
         self.assertIn("Taskforce1ScenarioIntel=Expect attack by TU-22M Backfire", rendered)
         self.assertIn("Action_Taskforce1_Intel=Taskforce1ScenarioIntel", rendered)
-        self.assertIn("Special_Force_Group_A=0,-100,Complete,Main", Generator(parse(default_scenario_dir() / " Single02.scs"), self.resolver).render())
+        self.assertIn("Special_Force_Group_A=0,-100,Complete,Main", Generator(parse(SCENARIOS / " Single02.scs"), self.resolver).render())
 
     def test_objectives_have_display_names(self) -> None:
-        rendered = Generator(parse(default_scenario_dir() / " Single02.scs"), self.resolver).render()
+        rendered = Generator(parse(SCENARIOS / " Single02.scs"), self.resolver).render()
         self.assertIn("Objective_Special_Force_Group_A=Special Force Group A", rendered)
         self.assertIn("Objective_Special_Forces_Stopped=Special Forces Stopped", rendered)
         self.assertIn("Objective_Mission_Over=Mission Over", rendered)
 
     def test_single17_maps_kuznetsov_to_soviet_carrier(self) -> None:
-        rendered = Generator(parse(default_scenario_dir() / " Single17.scs"), self.resolver).render()
+        rendered = Generator(parse(SCENARIOS / " Single17.scs"), self.resolver).render()
         self.assertIn("Type=wp_cv_orel", rendered)
         self.assertNotIn("Type=usn_cv_kitty_hawk", rendered)
 
     def test_single02_patrol_group_selects_one_enemy_boat(self) -> None:
-        rendered = Generator(parse(default_scenario_dir() / " Single02.scs"), self.resolver).render()
+        rendered = Generator(parse(SCENARIOS / " Single02.scs"), self.resolver).render()
         self.assertIn("NumberOfTaskforce2Vessels=1", rendered)
         self.assertIn("SpawnChance=1.000000", rendered)
         self.assertNotIn("Condition_Condition1_Type=UnitsInTheArea", rendered)
@@ -220,15 +225,30 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("[Trigger12]\nName=Mission Over\nAction_ObjectivesCompleted=Mission_Over\nAction_EndMission=True\nAction_Victory=Taskforce1\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=18000", rendered)
 
     def test_region_scc_files_are_parseable(self) -> None:
-        for source in sorted((default_scenario_dir()).glob("*.scc")):
+        for source in sorted(SCENARIOS.glob("*.scc")):
             with self.subTest(source=source.name):
                 rendered = Generator(parse(source), self.resolver).render()
                 parser = configparser.ConfigParser(interpolation=None, strict=True)
                 parser.read_string(rendered)
                 self.assertIn("Mission", parser)
 
+    def test_region1_airport_buildings_are_consolidated(self) -> None:
+        data = parse(SCENARIOS / " Region1.scc")
+        generator = Generator(data, self.resolver)
+        clusters = generator.land_clusters()
+        airport = next(cluster for cluster in clusters if cluster[0].get("uniquename") == "Airport 2")
+        self.assertEqual(len(airport), 29)
+        self.assertEqual(sum(1 for cluster in clusters if generator.taskforce_for(cluster[0]) == "Taskforce2"), 4)
+        self.assertTrue(all(member["name"] != "SAM" for member in airport))
+        rendered = generator.render()
+        parsed = configparser.ConfigParser(interpolation=None)
+        parsed.read_string(rendered)
+        self.assertEqual(parsed["Taskforce2LandUnit1"]["GeoPosition"], "8.58965010,77.85303426,low")
+        target = next(parsed[section] for section in parsed.sections() if parsed[section].get("Name") == "Airport Destroyed")
+        self.assertEqual(target["Condition_Condition1_Units"], "Taskforce2LandUnit1")
+
     def test_region1_keeps_explicit_allied_submarines_and_maps_invincible(self) -> None:
-        rendered = Generator(parse(default_scenario_dir() / " Region1.scc"), self.resolver).render()
+        rendered = Generator(parse(SCENARIOS / " Region1.scc"), self.resolver).render()
         self.assertIn("NumberOfTaskforce1Submarines=2", rendered)
         self.assertEqual(rendered.count("Type=usn_cv_kitty_hawk"), 0)
         self.assertEqual(rendered.count("Type=wp_takr_kiev"), 3)
@@ -240,7 +260,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertNotIn("Type=pns_ss_hangor", rendered)
 
     def test_soviet_installations_use_soviet_definitions(self) -> None:
-        data = parse(default_scenario_dir() / " Single31.scs")
+        data = parse(SCENARIOS / " Single31.scs")
         rendered = Generator(data, self.resolver).render()
         self.assertGreater(rendered.count("Type=wp_airbase_1"), 0)
         self.assertGreater(rendered.count("Type=wp_sam_site_sa-2"), 0)
@@ -260,6 +280,100 @@ class ResolverMappingTests(unittest.TestCase):
             self.assertEqual(resolver.resolve({"name": "Airport", "country": "Russia"}, "land_units"), "wp_airbase_1")
             self.assertEqual(resolver.resolve({"name": "Airport", "country": "United States"}, "land_units"), "nato_small_airbase")
             self.assertEqual(resolver.resolve({"name": "SAM", "country": "USSR"}, "land_units"), "wp_sam_site_sa-2")
+
+
+class LandStructureTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        root = Path(self.directory.name)
+        for category in ("land_units", "vessels", "aircraft", "biologic"):
+            (root / category).mkdir()
+        definitions = {
+            "nato_small_airbase": "[coll_runway]\nPosition=0,0,0\nRotation=0,0,0\nScale=2,1,12\n",
+            "tgt_industry_buildings_1": "[coll_selection]\nPosition=0,0,0\nScale=1,1,1\n",
+            "wp_sam_site_sa-2": "[coll_selection]\nPosition=0,0,0\nScale=1,1,1\n",
+            "nato_sam_skyguard": "[coll_selection]\nPosition=0,0,0\nScale=1,1,1\n",
+        }
+        for definition, contents in definitions.items():
+            (root / "land_units" / f"{definition}.ini").write_text(contents)
+        self.resolver = Resolver(root, MAPPING, lambda _: None)
+
+    def test_airbase_absorbs_nearby_buildings_and_keeps_its_position(self) -> None:
+        base = {"name": "Airport", "uniquename": "Base", "alliance_role": "enemy",
+                "position": {"latitude": 0, "longitude": 0}}
+        building = {"name": "Building4", "uniquename": "Hangar", "alliance_role": "enemy",
+                    "position": {"latitude": 0.001, "longitude": 0}}
+        more_buildings = [{"name": "Building4", "uniquename": f"Building {i}", "alliance_role": "enemy",
+                           "position": {"latitude": lat, "longitude": 0}}
+                          for i, lat in enumerate((0.004, -0.005), 1)]
+        sam = {"name": "SAM", "alliance_role": "enemy", "position": {"latitude": 0.001, "longitude": 0}}
+        other_side = {"name": "Building5", "position": {"latitude": 0.001, "longitude": 0}}
+        generator = Generator({"land_units": [building, base, *more_buildings, sam, other_side]}, self.resolver)
+        clusters = generator.land_clusters()
+        self.assertEqual([[item.get("uniquename", item["name"]) for item in cluster] for cluster in clusters],
+                         [["Base", "Hangar", "Building 1", "Building 2"], ["SAM"], ["Building5"]])
+        representatives = generator.land_cluster_items(clusters)
+        self.assertEqual(representatives[0][1]["position"], base["position"])
+        rendered = generator.render()
+        self.assertIn("# FleetCommandMergedLandUnits=Base,Hangar,Building 1,Building 2", rendered)
+        self.assertEqual(building["position"], {"latitude": 0.001, "longitude": 0})
+
+    def test_dense_buildings_merge_without_transitive_chain(self) -> None:
+        items = [{"name": "Building4", "position": {"latitude": lat, "longitude": 0}}
+                 for lat in (0, 0.003, 0.006)]
+        clusters = Generator({"land_units": items}, self.resolver).land_clusters()
+        self.assertEqual([len(cluster) for cluster in clusters], [2, 1])
+
+    def test_rectangular_airbase_does_not_force_building_into_a_ring(self) -> None:
+        base = {"name": "Airport", "position": {"latitude": 0, "longitude": 0}}
+        building = {"name": "Building4", "position": {"latitude": 0, "longitude": 0.004}}
+        generator = Generator({"land_units": [building, base]}, self.resolver)
+        arranged = generator.land_cluster_items(generator.land_clusters())
+        representative = next(item for _, item in arranged if item["name"] == "Building4")
+        self.assertEqual(representative["position"], building["position"])
+        self.assertEqual(base["position"], {"latitude": 0, "longitude": 0})
+
+    def test_overlapping_rotated_footprints_are_separated(self) -> None:
+        base = {"name": "Airport", "course": 45, "position": {"latitude": 0, "longitude": 0}}
+        building = {"name": "Building4", "position": {"latitude": 0.0015, "longitude": 0}}
+        generator = Generator({"land_units": [building, base]}, self.resolver)
+        arranged = generator.land_cluster_items(generator.land_clusters())
+        positions = {item["name"]: item for _, item in arranged}
+        boxes = []
+        for item in positions.values():
+            east, _, north = generator.local(item["position"])
+            boxes.append((east, north, generator.collision_boxes_nm(item)[0]))
+        self.assertFalse(generator.land_boxes_overlap(boxes[0], boxes[1], 2 / 1852))
+        self.assertEqual(positions["Airport"]["position"], base["position"])
+        self.assertNotEqual(positions["Building4"]["position"], building["position"])
+
+    def test_targeted_buildings_remain_individual(self) -> None:
+        base = {"name": "Airport", "uniquename": "Base", "position": {"latitude": 0, "longitude": 0}}
+        buildings = [{"name": "Building4", "uniquename": f"Building {i}",
+                      "position": {"latitude": 0.003, "longitude": i * 0.0001}} for i in range(4)]
+        generator = Generator({"land_units": [base, *buildings],
+                               "triggers_goals": [{"uniquename": "Building 0"}]}, self.resolver)
+        clusters = generator.land_clusters()
+        self.assertEqual([len(cluster) for cluster in clusters], [4, 1])
+        self.assertEqual(clusters[1][0]["uniquename"], "Building 0")
+
+    def test_model_scale_and_collider_rotation(self) -> None:
+        airport = self.resolver.root / "land_units" / "nato_small_airbase.ini"
+        airport.write_text("[coll_runway]\nPosition=1,0,0\nRotation=0,90,0\nScale=10,1,1\n")
+        generator = Generator({}, self.resolver)
+        box = generator.collision_boxes_nm({"name": "Airport", "position": {"latitude": 0, "longitude": 0}})[0]
+        self.assertAlmostEqual(box[0] * 2, 1000 / 1852)
+        self.assertAlmostEqual(box[2], 100 / 1852)
+        self.assertAlmostEqual(box[4], 3.141592653589793 / 2)
+
+    def test_country_specific_sam_never_falls_back_to_opposing_system(self) -> None:
+        self.assertEqual(self.resolver.resolve({"name": "SAM", "country": "Poland"}, "land_units"), "wp_sam_site_sa-2")
+        self.assertEqual(self.resolver.resolve({"name": "SAM", "alliance_country": "East Germany"}, "land_units"), "wp_sam_site_sa-2")
+        self.assertEqual(self.resolver.resolve({"name": "SAM", "alliance_countries": ["Poland", "USSR"]}, "land_units"), "wp_sam_site_sa-2")
+        self.assertEqual(self.resolver.resolve({"name": "SAM", "country": "United States"}, "land_units"), "nato_sam_skyguard")
+        self.resolver.files["land_units"].remove("wp_sam_site_sa-2")
+        self.assertIsNone(self.resolver.resolve({"name": "SAM", "country": "Poland"}, "land_units"))
 
 
 class HelicopterTaskTests(unittest.TestCase):

@@ -83,7 +83,7 @@ class Resolver:
     def land_origin(self, item: dict[str, Any]) -> str:
         """Infer the operator of generic Fleet Command installations."""
         direct = str(item.get("country") or item.get("alliance_country") or "").lower()
-        if direct:
+        if direct not in {"", "neutral", "neutrals", "unknown", "none"}:
             return direct
         countries = item.get("alliance_countries")
         if isinstance(countries, list) and len(countries) == 1:
@@ -94,7 +94,7 @@ class Resolver:
         if attached_countries:
             return max(set(attached_countries), key=attached_countries.count)
         return ""
-    def conditional_candidates(self, item: dict[str, Any], category: str, name: str, cls: str) -> list[str]:
+    def conditional_candidates(self, item: dict[str, Any], category: str, name: str, cls: str) -> tuple[list[str], bool]:
         """Return candidates from declarative category/name/country rules."""
         origin = norm(self.land_origin(item))
         name_text = norm(name)
@@ -120,19 +120,38 @@ class Resolver:
             country_map = rule.get("country_map", {})
             if not isinstance(country_map, dict):
                 continue
-            for country, candidates in country_map.items():
-                if country != "*" and norm(country) != origin:
-                    continue
+            # An alliance with several countries is still useful evidence when
+            # every listed operator selects the same installation family.
+            countries = item.get("alliance_countries")
+            if not origin and rule.get("strict_country") and isinstance(countries, list) and countries:
+                by_country = {norm(country): candidates for country, candidates in country_map.items() if country != "*"}
+                choices = [by_country.get(norm(country)) for country in countries]
+                if choices[0] and all(choice == choices[0] for choice in choices):
+                    values = choices[0] if isinstance(choices[0], list) else [choices[0]]
+                    return [value for value in values if isinstance(value, str)], True
+            # An exact country must win even if a custom mapping puts * first.
+            matching = [(country, candidates) for country, candidates in country_map.items()
+                        if country != "*" and norm(country) == origin]
+            if not matching and "*" in country_map:
+                matching = [("*", country_map["*"])]
+            for country, candidates in matching:
                 if isinstance(candidates, str):
-                    return [candidates]
+                    return [candidates], bool(rule.get("strict_country") and country != "*")
                 if isinstance(candidates, list):
-                    return [candidate for candidate in candidates if isinstance(candidate, str)]
-        return []
+                    return [candidate for candidate in candidates if isinstance(candidate, str)], bool(rule.get("strict_country") and country != "*")
+        return [], False
 
     def resolve(self, item: dict[str, Any], category: str) -> str | None:
         name = str(item.get("name") or item.get("shipname") or "")
         cls = str(item.get("class") or "")
-        candidates = self.conditional_candidates(item, category, name, cls)
+        candidates, strict_country = self.conditional_candidates(item, category, name, cls)
+        if strict_country:
+            available = self.files.get(category, self.all_files)
+            for candidate in candidates:
+                if candidate in available:
+                    return candidate
+            self.warn(f"no country-appropriate Sea Power definition found for {category} {name!r}")
+            return None
         name_map = self.mapping.get("name_map", {})
         candidates += name_map.get(name, [])
         simplified_name = re.sub(r"\s+(?:gen|gn)$", "", name, flags=re.IGNORECASE)

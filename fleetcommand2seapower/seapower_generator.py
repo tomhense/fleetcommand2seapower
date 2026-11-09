@@ -15,7 +15,9 @@ from .generator_reporting import quality_entry, warning_category
 class Generator(GeometryMixin, UnitMixin, ObjectiveMixin, RenderMixin):
     """Coordinate the specialized conversion components."""
 
-    LAND_CLUSTER_RADIUS_NM = 0.1
+    LAND_CLUSTER_RADIUS_NM = 0.25
+    AIRBASE_BUILDING_RADIUS_NM = 0.55
+    AIRBASE_MIN_BUILDINGS = 3
     SAM_CLUSTER_RADIUS_NM = 0.15
 
     def __init__(self, data: dict[str, Any], resolver: Resolver, year: int = 1985):
