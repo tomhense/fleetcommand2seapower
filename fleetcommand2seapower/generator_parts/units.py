@@ -50,6 +50,9 @@ class UnitMixin:
                         "Submarine" if category == "submarine" else "Vessel")
         section = f"[{prefix}{section_type}{index}]"
         lines = [section, f"Type={definition}", "CrewSkill=Trained", f"RelativePositionInNM={self.pos(item.get('position'))}"]
+        nation = self.resolver.nation(item)
+        if nation:
+            lines.insert(2, f"Nation={nation}")
         reference = self.resolver.national_reference(item, definition, folder)
         if folder == "vessels" and reference:
             lines.insert(2, f"VariantReference={reference}")
@@ -60,7 +63,7 @@ class UnitMixin:
             except OSError:
                 has_deck = False
             if has_deck:
-                self.add_flight_deck(lines, item)
+                self.add_flight_deck(lines, item, definition)
                 self.warn(f"aircraft attached to {item.get('uniquename')!r} remain internal to their base unit and were not spawned")
             else:
                 self.warn(f"{definition} has no flight deck; aircraft aboard {item.get('uniquename')!r} cannot be represented")
@@ -170,6 +173,56 @@ class UnitMixin:
                 selected[key] = members
         return selected
 
+    def alternative_group_families(self) -> list[list[tuple[int, dict[str, Any], float]]]:
+        """Identify sibling vessel groups that form a single weighted choice.
+
+        Each branch needs an always-present leader to serve as its runtime
+        selector. Leave other group arrangements on the existing fallback.
+        """
+        groups = [group for group in self.data.get("groups", []) if isinstance(group, dict)]
+        parents = {group.get("group_id"): group for group in groups}
+        siblings: dict[int, list[dict[str, Any]]] = {}
+        for group in groups:
+            parent = group.get("parent_group_id")
+            if isinstance(parent, (int, float)) and parent >= 0:
+                siblings.setdefault(int(parent), []).append(group)
+        result: list[list[tuple[int, dict[str, Any], float]]] = []
+        for parent, branches in siblings.items():
+            if parent not in parents:
+                continue
+            try:
+                weights = [float(branch.get("probability", 100)) for branch in branches]
+                if (len(branches) < 2 or not all(0 < weight < 100 for weight in weights)
+                        or not 95 <= sum(weights) <= 105
+                        or float(parents.get(parent, {}).get("probability", 100)) != 100):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            family: list[tuple[int, dict[str, Any], float]] = []
+            prefixes: set[str] = set()
+            for branch, weight in zip(branches, weights):
+                group_id = branch.get("group_id")
+                if not isinstance(group_id, (int, float)):
+                    break
+                if any(isinstance(item, dict) and item.get("group") == group_id
+                       for source in ("aircraft", "land_units")
+                       for item in (self.data.get(source) if isinstance(self.data.get(source), list) else [])):
+                    break
+                members = [item for item in self.data.get("vessels", []) if isinstance(item, dict)
+                           and item.get("group") == group_id]
+                try:
+                    leaders = [item for item in members if float(item.get("prob", 100)) >= 100
+                               and not item.get("formationleader") and item.get("uniquename")]
+                except (TypeError, ValueError):
+                    break
+                if len(leaders) != 1 or not self.resolver.resolve(leaders[0], "vessels"):
+                    break
+                prefixes.update(self.taskforce_for(item) for item in members)
+                family.append((int(group_id), leaders[0], weight))
+            if len(family) == len(branches) and len(prefixes) == 1:
+                result.append(family)
+        return result
+
     def group_probability(self, group_id: int) -> float:
         for group in self.data.get("groups", []) if isinstance(self.data.get("groups"), list) else []:
             if isinstance(group, dict) and group.get("group_id") == group_id:
@@ -194,6 +247,9 @@ class UnitMixin:
         geo_altitude = "low" if not altitude else f"{float(altitude):.0f}"
         lines = [section, f"Type={definition}",
                  f"GeoPosition={float(point.get('latitude', self.center_lat)):.8f},{float(point.get('longitude', self.center_lon)):.8f},{geo_altitude}"]
+        nation = self.resolver.nation(item, infer_land=True)
+        if nation:
+            lines.insert(2, f"Nation={nation}")
         # Fleet Command installations generally have considerably fewer hit
         # points than the corresponding Sea Power scenery entity.  Sea Power
         # does not expose a numeric hit-point override in a mission file, but
@@ -206,7 +262,7 @@ class UnitMixin:
             # Airbase definitions have a built-in aircraft roster in Sea Power.
             # Replace it explicitly or those aircraft appear even when the
             # Fleet Command air station has no active aircraft assigned.
-            self.add_flight_deck(lines, item)
+            self.add_flight_deck(lines, item, definition)
         if item.get("course") is not None: lines.append(f"Heading={float(item['course']):.2f}")
         if item.get("uniquename"): lines.append(f"# FleetCommandName={item['uniquename']}")
         return "\n".join(lines), section[1:-1]
@@ -456,28 +512,39 @@ class UnitMixin:
                  - float(second_point.get("latitude", self.center_lat))) * 60
         return math.hypot(east, north)
 
-    def flight_deck(self, item: dict[str, Any]) -> tuple[dict[str, int], list[tuple[str, int, str]]]:
+    def flight_deck(self, item: dict[str, Any], base_definition: str | None = None) -> tuple[dict[tuple[str, str], int], list[tuple[str, str, int, str, int]]]:
         """Map a Fleet Command aircraft roster to Sea Power's air group.
 
         Every aircraft remains in the roster. Alert5/Alert15/Alert30 become
         ready-up tasks with 0/900/1800 seconds of delay. Aircraft without an
         alert state remain available but are not readied automatically.
         """
-        roster: dict[str, int] = {}
-        ready_tasks: list[tuple[str, int, str, int]] = []
+        roster: dict[tuple[str, str], int] = {}
+        ready_tasks: list[tuple[str, str, int, str, int]] = []
         attachments = item.get("aircraft") if isinstance(item.get("aircraft"), list) else []
         for attachment in attachments:
             if not isinstance(attachment, dict):
                 continue
-            definition = self.resolver.resolve(attachment, "aircraft")
+            aircraft = dict(attachment)
+            if not aircraft.get("country") and item.get("country"):
+                aircraft["country"] = item["country"]
+            definition = self.resolver.resolve(aircraft, "aircraft")
             if not definition:
                 continue
+            overrides = self.resolver.mapping.get("airgroup_overrides", {}).get(base_definition, {})
+            replacement = overrides.get(definition) if isinstance(overrides, dict) else None
+            if replacement and replacement in self.resolver.files["aircraft"]:
+                definition = replacement
+            squadron = self.resolver.national_reference(aircraft, definition, "aircraft")
+            if squadron is None and (nation := self.resolver.nation(aircraft)):
+                self.warn(f"no {nation} squadron for embarked {definition}; using the Default squadron")
+            squadron = squadron or "Default"
             statuses = attachment.get("alert_status")
             try:
                 quantity = max(0, int(float(attachment.get("quantity") or 0)))
             except (TypeError, ValueError):
                 quantity = 0
-            roster[definition] = roster.get(definition, 0) + quantity
+            roster[(definition, squadron)] = roster.get((definition, squadron), 0) + quantity
             text = norm(f"{attachment.get('name')} {attachment.get('class')}")
             if "electronic" in text:
                 task = "EW"
@@ -502,19 +569,22 @@ class UnitMixin:
                     except (TypeError, ValueError):
                         ready = 0
                     if ready:
-                        ready_tasks.append((definition, ready, task, delays[entry["alert"]]))
+                        ready_tasks.append((definition, squadron, ready, task, delays[entry["alert"]]))
         return roster, ready_tasks
 
-    def add_flight_deck(self, lines: list[str], item: dict[str, Any]) -> None:
-        roster, ready_tasks = self.flight_deck(item)
+    def add_flight_deck(self, lines: list[str], item: dict[str, Any], base_definition: str | None = None) -> None:
+        roster, ready_tasks = self.flight_deck(item, base_definition)
         lines.append("CustomAirGroup=True")
         if not roster:
-            roster["civ_c340"] = 0
-        lines.extend(f"{definition}=Default,{quantity}" for definition, quantity in roster.items())
+            roster[("civ_c340", "Default")] = 0
+        grouped_roster: dict[str, list[str]] = {}
+        for (definition, squadron), quantity in roster.items():
+            grouped_roster.setdefault(definition, []).append(f"{squadron},{quantity}")
+        lines.extend(f"{definition}={'|'.join(entries)}" for definition, entries in grouped_roster.items())
         if ready_tasks:
             lines.append(f"FlightDeck_ReadyUpTasks={len(ready_tasks)}")
-            for number, (definition, quantity, task, delay) in enumerate(ready_tasks, 1):
-                lines.append(f"FlightDeck_ReadyUpTask{number}={definition},Default,{task},{quantity},{delay}")
+            for number, (definition, squadron, quantity, task, delay) in enumerate(ready_tasks, 1):
+                lines.append(f"FlightDeck_ReadyUpTask{number}={definition},{squadron},{task},{quantity},{delay}")
 
     def attached_aircraft(self, prefix: str, item: dict[str, Any], home_base: str,
                           counts: dict[str, int]) -> list[str]:

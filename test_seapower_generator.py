@@ -7,6 +7,7 @@ import configparser
 import json
 import re
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -166,7 +167,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("GeoPosition=-1.42040270,123.39540434,low", rendered)
         self.assertNotIn("Taskforce2_Formation1=", rendered)
         self.assertGreaterEqual(rendered.count("Waypoints="), 8)
-        self.assertIn("Condition_Condition1_PositionNM=geo,-1.240355,123.107449,0", rendered)
+        self.assertIn("Name=Pirates Neutralized\nAction_ObjectivesCompleted=Pirates_Neutralized\nAction_EndMission=True\nAction_Victory=Taskforce1\nCondition_Condition1_Type=TriggerCompleted", rendered)
         self.assertIn("SpawnChance=0.500", rendered)
         self.assertIn("RelativePositionInNM=200.2212,2500.0000,49.4711\nHeading=0.00\nTelegraph=2", rendered)
         self.assertIn("[Trigger10]\nName=End mission.\nAction_ObjectivesCompleted=End_mission\nAction_EndMission=True\nAction_Victory=Taskforce2\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=54000", rendered)
@@ -197,9 +198,8 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("usn_ea-6b=Default,4", rendered)
         self.assertIn("usn_e-2c=Default,2", rendered)
         self.assertIn("Taskforce1_Formation1=Taskforce1Vessel1,Taskforce1Vessel2,Taskforce1Vessel3|Group CVN 76", rendered)
-        self.assertIn("Condition_Condition1_Type=HasNoUnitsOfType", rendered)
-        self.assertIn("Condition_Condition1_Taskforce=Taskforce2", rendered)
-        self.assertIn("Condition_Condition1_UnitType=Aircraft", rendered)
+        self.assertIn("Condition_Condition1_Type=TriggerCompleted", rendered)
+        self.assertIn("Condition_Condition2_Taskforce=Taskforce2", rendered)
         self.assertIn("Taskforce1IntelMessage=Intel|New intelligence received|Acknowledge", rendered)
         self.assertIn("Taskforce1ScenarioIntel=Expect attack by TU-22M Backfire", rendered)
         self.assertIn("Action_Taskforce1_Intel=Taskforce1ScenarioIntel", rendered)
@@ -221,7 +221,7 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         self.assertIn("NumberOfTaskforce2Vessels=1", rendered)
         self.assertIn("SpawnChance=1.000000", rendered)
         self.assertNotIn("Condition_Condition1_Type=UnitsInTheArea", rendered)
-        self.assertIn("[Trigger11]\nName=Special Forces Stopped\nAction_ObjectivesCompleted=Special_Forces_Stopped\nAction_EndMission=True\nAction_Victory=Taskforce1\nCondition_Condition1_Type=UnitDestroyed", rendered)
+        self.assertIn("[Trigger11]\nName=Special Forces Stopped\nAction_ObjectivesCompleted=Special_Forces_Stopped\nAction_EndMission=True\nAction_Victory=Taskforce1\nCondition_Condition1_Type=TriggerCompleted", rendered)
         self.assertIn("[Trigger12]\nName=Mission Over\nAction_ObjectivesCompleted=Mission_Over\nAction_EndMission=True\nAction_Victory=Taskforce1\nCondition_Condition1_Type=Time\nCondition_Condition1_Time=18000", rendered)
 
     def test_region_scc_files_are_parseable(self) -> None:
@@ -251,13 +251,38 @@ class SeaPowerGeneratorTests(unittest.TestCase):
         rendered = Generator(parse(SCENARIOS / " Region1.scc"), self.resolver).render()
         self.assertIn("NumberOfTaskforce1Submarines=2", rendered)
         self.assertEqual(rendered.count("Type=usn_cv_kitty_hawk"), 0)
-        self.assertEqual(rendered.count("Type=wp_takr_kiev"), 3)
+        self.assertEqual(rendered.count("Type=wp_takr_kiev"), 1)
         self.assertIn("Type=wp_ss_foxtrot\nSpawnChance=0.083\nVariantReference=Variant58", rendered)
         self.assertIn("Type=wp_ss_kilo\nSpawnChance=0.083\nVariantReference=Variant17", rendered)
         self.assertEqual(rendered.count("Type=pla_h-6a"), 2)
         self.assertEqual(rendered.count("Type=wp_bdk_ropucha"), 2)
         self.assertIn("Type=wp_vt_boris_chilikin", rendered)
         self.assertNotIn("Type=pns_ss_hangor", rendered)
+        config = configparser.ConfigParser(interpolation=None)
+        config.read_string(rendered)
+        assault = config["Trigger9"]
+        self.assertEqual(assault["ConditionsCompleted"], "<Condition1> AND <Condition2> AND <Condition3> AND <Condition4>")
+        self.assertEqual([assault[f"Condition_Condition{i}_Triggers"] for i in range(1, 5)],
+                         ["Trigger5", "Trigger6", "Trigger7", "Trigger8"])
+        self.assertNotIn("Action_EndMission", assault)
+        final = config["Trigger1"]
+        self.assertEqual(final["Condition_Condition2_Triggers"], "Trigger9")
+        active_carriers = [f"Trigger{i}" for i in (11, 12, 13) if not config[f"Trigger{i}"].getboolean("Disabled", fallback=False)]
+        self.assertEqual(len(active_carriers), 1)
+        self.assertEqual(final["Condition_Condition3_Triggers"], active_carriers[0])
+        carrier = next(config[s] for s in config.sections() if config[s].get("Type") == "wp_takr_kiev")
+        self.assertEqual(carrier["SpawnChance"], "1.000000")
+        self.assertEqual(carrier["wp_yak-38"], "Default,12")
+        self.assertNotIn("usmc_av-8a", carrier)
+        self.assertIn("wp_yak-38", carrier["FlightDeck_ReadyUpTask1"])
+        self.assertNotIn("Action_DespawnUnits=True", rendered)
+        self.assertEqual(carrier["Nation"], "India")
+        self.assertTrue(all(config[s].get("Nation") == "India" for s in config.sections()
+                            if config[s].get("Type") == "wp_bdk_ropucha"))
+        self.assertEqual(config["Taskforce2LandUnit1"]["Nation"], "India")
+        self.assertEqual(config["Taskforce2Aircraft2"]["Nation"], "China")
+        self.assertEqual(config["Taskforce2Aircraft3"]["Nation"], "Soviet")
+        self.assertEqual(config["Taskforce2Aircraft4"]["Nation"], "India")
 
     def test_soviet_installations_use_soviet_definitions(self) -> None:
         data = parse(SCENARIOS / " Single31.scs")
@@ -424,7 +449,125 @@ class HelicopterTaskTests(unittest.TestCase):
                 "message": "A different scenario-specific message."}), "Units have reached the objective area.")
 
 
+class ParentGoalTests(unittest.TestCase):
+    def test_parent_waits_for_children_and_allows_unspawned_targets(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for category in ("land_units", "vessels", "aircraft", "biologic"):
+                (root / category).mkdir()
+            (root / "vessels" / "wp_ptg_osa2.ini").touch()
+            resolver = Resolver(root, MAPPING, lambda _: None)
+            data = {
+                "metadata": {"latlong": [10, 20]},
+                "groups": [{"group_id": 3, "probability": 40}],
+                "vessels": [
+                    {"name": "Osa II PCFG", "uniquename": "required", "alliance_role": "enemy"},
+                    {"name": "Osa II PCFG", "uniquename": "optional", "alliance_role": "enemy", "group": 3},
+                ],
+                "triggers_goals": [
+                    {"goalid": 1, "parentgoalid": -1, "goaltype": 3, "goalname": "Campaign"},
+                    {"goalid": 2, "parentgoalid": 1, "goaltype": 3, "goalname": "Group destroyed"},
+                    {"goalid": 3, "parentgoalid": 2, "goaltype": 2, "uniquename": "required"},
+                    {"goalid": 4, "parentgoalid": 2, "goaltype": 2, "uniquename": "optional"},
+                ],
+            }
+            parsed = configparser.ConfigParser(interpolation=None)
+            parsed.read_string(Generator(data, resolver).render())
+            group = parsed["Trigger2"]
+            self.assertEqual(group["Condition_Condition1_Triggers"], "Trigger3")
+            self.assertEqual(group["Condition_Condition2_Triggers"], "Trigger4")
+            self.assertEqual(group["Condition_Condition3_Type"], "UnitsInTheArea")
+            self.assertEqual(group["Condition_Condition3_Units"], "Taskforce2Vessel2")
+            self.assertEqual(group["Condition_Condition3_Taskforce"], "Taskforce2")
+            self.assertEqual(group["ConditionsCompleted"], "<Condition1> AND (<Condition2> OR NOT <Condition3>)")
+            self.assertNotIn("Action_EndMission", group)
+            self.assertEqual(parsed["Trigger1"]["Condition_Condition1_Triggers"], "Trigger2")
+            self.assertEqual(parsed["Taskforce2Vessel2"]["SpawnChance"], "0.400")
+
+
+class AlternativeGroupsTests(unittest.TestCase):
+    def test_one_sibling_group_is_emitted_and_its_goal_is_active(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for category in ("land_units", "vessels", "aircraft", "biologic"):
+                (root / category).mkdir()
+            (root / "vessels" / "wp_ptg_osa2.ini").touch()
+            resolver = Resolver(root, MAPPING, lambda _: None)
+            data = {
+                "groups": [{"group_id": 1, "probability": 100}, *[
+                    {"group_id": number, "parent_group_id": 1, "probability": 33}
+                    for number in (2, 3, 4)]],
+                "vessels": [
+                    {"name": "Osa II PCFG", "uniquename": f"leader {number}", "group": number,
+                     "prob": 100, "alliance_role": "enemy"} for number in (2, 3, 4)],
+                "triggers_goals": [
+                    {"goalid": 1, "parentgoalid": -1, "goaltype": 3, "goalname": "Campaign"},
+                    *[{"goalid": number, "parentgoalid": 1, "goaltype": 2,
+                       "group": number, "uniquename": f"leader {number}"} for number in (2, 3, 4)],
+                ],
+            }
+            for choice in range(3):
+                with self.subTest(choice=choice), patch("fleetcommand2seapower.generator_parts.render.random.choices",
+                                                       side_effect=lambda family, **_: [family[choice]]):
+                    rendered = Generator(data, resolver).render()
+                parsed = configparser.ConfigParser(interpolation=None)
+                parsed.read_string(rendered)
+                self.assertEqual(parsed["Mission"]["NumberOfTaskforce2Vessels"], "1")
+                self.assertEqual(parsed["Taskforce2Vessel1"]["SpawnChance"], "1.000000")
+                self.assertEqual(parsed["Trigger1"]["Condition_Condition1_Triggers"], f"Trigger{choice + 2}")
+                self.assertFalse(parsed[f"Trigger{choice + 2}"].getboolean("Disabled", fallback=False))
+                self.assertEqual(sum(parsed[f"Trigger{i}"].getboolean("Disabled", fallback=False) for i in (2, 3, 4)), 2)
+                self.assertNotIn("Action_DespawnUnits=True", rendered)
+
+    def test_carrier_aircraft_override_is_platform_specific(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for category in ("land_units", "vessels", "aircraft", "biologic"):
+                (root / category).mkdir()
+            for definition in ("usmc_av-8a", "wp_yak-38"):
+                (root / "aircraft" / f"{definition}.ini").touch()
+            generator = Generator({}, Resolver(root, MAPPING, lambda _: None))
+            ship = {"aircraft": [{"name": "FA-2 Sea Harrier", "quantity": 2,
+                                  "alert_status": [{"alert": "Alert5", "value": 1}]}]}
+            kiev: list[str] = []
+            other: list[str] = []
+            generator.add_flight_deck(kiev, ship, "wp_takr_kiev")
+            generator.add_flight_deck(other, ship, "another_carrier")
+            self.assertIn("wp_yak-38=Default,2", kiev)
+            self.assertTrue(any(line.startswith("FlightDeck_ReadyUpTask1=wp_yak-38,") for line in kiev))
+            self.assertIn("usmc_av-8a=Default,2", other)
+
+
 class NationalUnitTests(unittest.TestCase):
+    def test_air_group_selects_squadrons_by_nation(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for category in ("land_units", "vessels", "aircraft", "biologic"):
+                (root / category).mkdir()
+            (root / "aircraft" / "wp_tu-16.ini").touch()
+            (root / "aircraft" / "wp_tu-16_squadrons.ini").write_text(
+                "[Default]\nNation=Soviet\n[Squadron7]\nNation=China\n")
+            resolver = Resolver(root, MAPPING, lambda _: None)
+            generator = Generator({}, resolver)
+            lines: list[str] = []
+            generator.add_flight_deck(lines, {"country": "India", "aircraft": [
+                {"name": "Badger Gen", "country": "China", "quantity": 2,
+                 "alert_status": [{"alert": "Alert5", "value": 1}]},
+                {"name": "Badger Gen", "country": "Russia", "quantity": 3},
+            ]})
+            self.assertIn("wp_tu-16=Squadron7,2|Default,3", lines)
+            self.assertTrue(any(line.startswith("FlightDeck_ReadyUpTask1=wp_tu-16,Squadron7,") for line in lines))
+
+    def test_land_nation_inference_requires_unambiguous_source(self) -> None:
+        with TemporaryDirectory() as directory:
+            resolver = Resolver(Path(directory), MAPPING, lambda _: None)
+            self.assertEqual(resolver.nation({"country": "United States"}), "US")
+            self.assertEqual(resolver.nation({"country": "Russia"}), "Soviet")
+            self.assertIsNone(resolver.nation({"country": "NEUTRALS"}))
+            self.assertEqual(resolver.nation({"aircraft": [{"country": "India"}, {"country": "India"},
+                                                             {"country": "China"}]}, infer_land=True), "India")
+            self.assertIsNone(resolver.nation({"aircraft": [{"country": "India"}, {"country": "China"}]}, infer_land=True))
+
     def test_indian_and_chinese_units_use_available_national_assets(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

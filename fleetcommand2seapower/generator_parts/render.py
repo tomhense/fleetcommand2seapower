@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import random
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +52,33 @@ class RenderMixin:
         random_group_members = {id(item) for members in random_groups.values() for item in members}
         random_group_emitted: set[tuple[str, int]] = set()
         random_group_ids: dict[str, set[int]] = {prefix: set() for prefix in taskforces}
+        alternative_families = self.alternative_group_families()
+        alternative_chances: dict[int, float] = {}
+        excluded_groups: set[int] = set()
+        selected_groups: set[int] = set()
+        for family in alternative_families:
+            selected = random.choices(family, weights=[weight for _, _, weight in family], k=1)[0]
+            selected_groups.add(selected[0])
+            excluded_groups.update(group_id for group_id, _, _ in family if group_id != selected[0])
+            self.warn(f"alternative groups selected at conversion time: group {selected[0]}; regenerate to vary the choice")
+            for group_id, leader, weight in family:
+                if group_id != selected[0]:
+                    continue
+                for member in self.data.get("vessels", []):
+                    if not isinstance(member, dict) or member.get("group") != group_id:
+                        continue
+                    try:
+                        probability = float(member.get("prob", 100))
+                    except (TypeError, ValueError):
+                        probability = 100
+                    individual = probability / 100 if 0 < probability < 100 else 1.0
+                    alternative_chances[id(member)] = individual
         aircraft_items = list(self.data.get("aircraft", [])) if isinstance(self.data.get("aircraft"), list) else []
         for source in ("vessels", "aircraft"):
             source_items = aircraft_items if source == "aircraft" else self.data.get(source, [])
             for item in source_items if isinstance(source_items, list) else []:
+                if item.get("group") in excluded_groups:
+                    continue
                 role = self.role(item); prefix = self.taskforce_for(item)
                 random_key = (prefix, int(item["group"])) if source == "vessels" and isinstance(item.get("group"), (int, float)) else None
                 if id(item) in random_group_members:
@@ -88,7 +112,8 @@ class RenderMixin:
                 key = prefix + ("Submarine" if kind == "submarine" else
                                 "Helicopter" if kind == "helicopter" else
                                 "Aircraft" if kind == "aircraft" else "Vessel")
-                result = self.section(prefix, counts[key] + 1, item, source)
+                result = self.section(prefix, counts[key] + 1, item, source,
+                                      spawn_chance=alternative_chances.get(id(item)))
                 if result:
                     counts[key] += 1
                     block, section = result; blocks.append(block)
@@ -186,7 +211,7 @@ class RenderMixin:
             lines.extend(f"{first},{second}=Neutral" for second in self.enemy_taskforce_prefixes[index + 1:])
         lines.extend(f"{prefix},Neutral=Neutral" for prefix in side_taskforces)
         lines += ["", *blocks]
-        triggers, objectives = self.trigger_sections(units, autodetect_units)
+        triggers, objectives = self.trigger_sections(units, autodetect_units, excluded_groups, selected_groups)
         if triggers:
             # Keep the standard section marker used by Sea Power's mission
             # editor. It helps the editor classify the following [TriggerN]

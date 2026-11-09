@@ -96,25 +96,84 @@ class ObjectiveMixin:
                     return dict(position) if isinstance(position, dict) else None
         return None
 
-    def trigger_sections(self, units: dict[str, str], autodetect_units: list[str] | None = None) -> tuple[list[str], list[str]]:
+    def target_may_not_spawn(self, goal: dict[str, Any], selected_groups: set[int] | None = None) -> bool:
+        target = str(goal.get("uniquename") or "")
+        for source in ("vessels", "aircraft", "land_units"):
+            for item in self.data.get(source, []) if isinstance(self.data.get(source), list) else []:
+                if not isinstance(item, dict) or str(item.get("uniquename") or "") != target:
+                    continue
+                try:
+                    probability = float(item.get("prob", 100))
+                    if 0 < probability < 100:
+                        return True
+                    group_id = item.get("group")
+                    if group_id in (selected_groups or set()):
+                        return False
+                    return any(isinstance(group, dict) and group.get("group_id") == group_id
+                               and 0 < float(group.get("probability", 100)) < 100
+                               for group in self.data.get("groups", []) if group_id is not None)
+                except (TypeError, ValueError):
+                    return False
+        return False
+
+    def trigger_sections(self, units: dict[str, str], autodetect_units: list[str] | None = None,
+                         excluded_groups: set[int] | None = None,
+                         selected_groups: set[int] | None = None) -> tuple[list[str], list[str]]:
         triggers, objectives = [], []
         goals = self.data.get("triggers_goals", [])
+        excluded_groups = excluded_groups or set()
+        target_groups = {str(item.get("uniquename")): item.get("group")
+                         for source in ("vessels", "aircraft", "land_units")
+                         for item in (self.data.get(source) if isinstance(self.data.get(source), list) else [])
+                         if isinstance(item, dict) and item.get("uniquename")}
+        inactive = {id(goal) for goal in goals if goal.get("group") in excluded_groups
+                    or target_groups.get(str(goal.get("uniquename") or "")) in excluded_groups}
         children_by_parent: dict[int, list[dict[str, Any]]] = {}
+        goal_numbers = {id(goal): number for number, goal in enumerate(goals, 1)}
         for child in goals:
             try:
-                parent_id = int(float(child.get("parentgoalid") or -1))
+                parent_id = int(float(child.get("parentgoalid", -1)))
             except (TypeError, ValueError):
                 parent_id = -1
             children_by_parent.setdefault(parent_id, []).append(child)
+        # A parent with no remaining children cannot be completed either.
+        while True:
+            newly_inactive = set()
+            for goal in goals:
+                try:
+                    goal_id = int(float(goal.get("goalid", -1)))
+                except (TypeError, ValueError):
+                    continue
+                children = [child for child in children_by_parent.get(goal_id, []) if child is not goal]
+                if children and all(id(child) in inactive for child in children):
+                    newly_inactive.add(id(goal))
+            if newly_inactive <= inactive:
+                break
+            inactive.update(newly_inactive)
         for n, (objective_id, name) in enumerate(self.objective_labels(), 1):
             goal = goals[n - 1]
+            if id(goal) in inactive:
+                triggers.append("\n".join([f"[Trigger{n}]", f"Name={name}", "Disabled=True",
+                                            "Condition_Condition1_Type=Time", "Condition_Condition1_Time=1",
+                                            "ConditionsCompleted=<Condition1>"]))
+                continue
             points = int(float(goal.get("points") or 0))
             # Fleet Command's negative goal points are penalties, whereas
             # Sea Power's first objective field is the completion reward and
             # its second field is the failure penalty.
             reward = max(0, points)
             penalty = points if points < 0 else -5
-            is_tasking = self.tasking_goal(goal, name)
+            try:
+                goal_id = int(float(goal.get("goalid", -1)))
+            except (TypeError, ValueError):
+                goal_id = -1
+            try:
+                parent_id = int(float(goal.get("parentgoalid", -1)))
+            except (TypeError, ValueError):
+                parent_id = -1
+            children = [child for child in children_by_parent.get(goal_id, [])
+                        if child is not goal and id(child) not in inactive] if goal_id >= 0 else []
+            is_tasking = self.tasking_goal(goal, name) and not children
             if not is_tasking:
                 objectives.append(f"{objective_id}={reward},{penalty},Complete,Main")
             target = str(goal.get("uniquename") or "")
@@ -126,12 +185,45 @@ class ObjectiveMixin:
             all_enemy_aircraft = bool(re.search(r"hostile.*air|all.*air|air.*destroyed", name, re.IGNORECASE))
             ctype = None
             condition_types: list[str] | None = None
-            child_sections = []
-            for child in children_by_parent.get(int(float(goal.get("goalid") or -1)), []):
-                child_section = units.get(str(child.get("uniquename") or ""))
-                if child_section and child_section not in child_sections:
-                    child_sections.append(child_section)
-            if is_tasking:
+            completion_expression: str | None = None
+            if goal_type == 3 and children:
+                condition_lines = []
+                condition_types = []
+                terms = []
+                for child in children:
+                    condition_types.append("TriggerCompleted")
+                    number = len(condition_types)
+                    condition_lines.append(f"Condition_Condition{number}_Triggers=Trigger{goal_numbers[id(child)]}")
+                    term = f"<Condition{number}>"
+                    section = units.get(str(child.get("uniquename") or ""))
+                    if section and self.target_may_not_spawn(child, selected_groups):
+                        # An absent optional unit has no destruction event. A
+                        # globe-wide area check makes it optional while still
+                        # requiring every unit that did spawn to be destroyed.
+                        condition_types.append("UnitsInTheArea")
+                        area_number = len(condition_types)
+                        condition_lines.extend((
+                            f"Condition_Condition{area_number}_Units={section}",
+                            f"Condition_Condition{area_number}_PositionNM=geo,{self.center_lat:.6f},{self.center_lon:.6f},0",
+                            f"Condition_Condition{area_number}_AreaRadiusNM=12000",
+                            f"Condition_Condition{area_number}_AreaDisplaySide=None",
+                            f"Condition_Condition{area_number}_MinimumUnits=1",
+                        ))
+                        taskforce = re.match(r"^(Taskforce\d+|Neutral)", section)
+                        if taskforce:
+                            condition_lines.append(f"Condition_Condition{area_number}_Taskforce={taskforce.group(1)}")
+                        term = f"({term} OR NOT <Condition{area_number}>)"
+                    terms.append(term)
+                start_hour = int(float(self.data.get("metadata", {}).get("timeofday") or 0)) % 24
+                elapsed_start = goal_start - start_hour * 3600
+                if elapsed_start > 0:
+                    condition_types.append("Time")
+                    number = len(condition_types)
+                    condition_lines.append(f"Condition_Condition{number}_Time={elapsed_start}")
+                    terms.append(f"<Condition{number}>")
+                condition = "\n".join(condition_lines)
+                completion_expression = " AND ".join(terms)
+            elif is_tasking:
                 # Fleet Command goal times use seconds since midnight; Sea
                 # Power's Time condition counts seconds since mission start.
                 start_hour = int(float(self.data.get("metadata", {}).get("timeofday") or 0)) % 24
@@ -154,9 +246,6 @@ class ObjectiveMixin:
             elif goal_type == 3 and time_goal and goal_start > 0:
                 condition = f"Condition_Condition1_Time={goal_start}"
                 ctype = "Time"
-            elif goal_type == 3 and child_sections and re.search(r"special.*force|all.*(killed|destroyed)", name, re.IGNORECASE):
-                condition = f"Condition_Condition1_Units={','.join(child_sections)}"
-                ctype = "UnitDestroyed"
             elif goal_type in {0, 3} and goal.get("position") and (goal_type == 3 or goal.get("class") or goal.get("shipname") or goal.get("tagname")):
                 trigger_point = self.target_position(target) or dict(goal.get("position"))
                 trigger_point["altitude"] = 0
@@ -200,8 +289,9 @@ class ObjectiveMixin:
                 lines.append(f"Action_ObjectivesCompleted={objective_id}")
             if self.goal_has_message(goal):
                 lines.append(f"Action_Taskforce1_Message=Taskforce1Goal{n}Message")
-            if goal_type == 3 and not is_tasking:
-                victory = "Taskforce1" if re.search(r"mission\s+over", name, re.IGNORECASE) else ("Taskforce2" if time_goal else "Taskforce1")
+            if goal_type == 3 and not is_tasking and (not children or parent_id < 0):
+                failed = bool(re.search(r"\bfail|\bincomplete\b|\bimpossible\b|\bend\s*mission\b|\bquit\b", name, re.IGNORECASE))
+                victory = "Taskforce2" if failed else "Taskforce1"
                 lines += ["Action_EndMission=True", f"Action_Victory={victory}"]
             if condition_types:
                 lines.extend(f"Condition_Condition{number}_Type={condition_type}"
@@ -210,8 +300,8 @@ class ObjectiveMixin:
                 lines.append(f"Condition_Condition1_Type={ctype}")
             condition_count = len(condition_types) if condition_types else max(
                 [int(number) for number in re.findall(r"Condition_Condition(\d+)_", condition)] or [1])
-            lines += [condition, "ConditionsCompleted=" + " AND ".join(
-                f"<Condition{number}>" for number in range(1, condition_count + 1))]
+            lines += [condition, "ConditionsCompleted=" + (completion_expression or " AND ".join(
+                f"<Condition{number}>" for number in range(1, condition_count + 1)))]
             triggers.append("\n".join(lines))
         intel = ini_text(self.data.get("metadata", {}).get("intelmessage"))
         if intel and intel.lower() not in {"none", "none available", "not available", "n/a"}:

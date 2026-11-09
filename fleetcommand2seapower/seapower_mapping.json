@@ -1,5 +1,8 @@
 {
   "description": "Fleet Command names and classes mapped to Sea Power unit definition stems. Values are tried in order; the first existing definition wins.",
+  "airgroup_overrides": {
+    "wp_takr_kiev": {"usmc_av-8a": "wp_yak-38"}
+  },
   "conditional_map": [
     {
       "category": "aircraft",

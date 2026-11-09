@@ -20,6 +20,7 @@ Also these missions might be very unbalanced in Sea Power.
 
 - Some units might be incorrect because they were mapped wrong or a generic fallback was used
 - Some triggers may be broken
+- Alternative unit groups are selected when generating the mission, not each time it loads; Sea Power may support load-time group selection in the future.
 - Some units may spawn on land. This is not a coordinate mapping problem, instead it seems that the map of Fleet Command is a bit incorrect at some places.
 - Nearby buildings and SAMs may be combined into larger Sea Power installations; minor buildings near an airbase can become part of the airbase. Their individual targets then share one destruction state. Country-specific installation mappings depend on the country information available in the scenario.
 - ...

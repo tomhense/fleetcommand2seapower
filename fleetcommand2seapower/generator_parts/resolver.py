@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,32 @@ class Resolver:
         self.all_files = set().union(*self.files.values())
         self._variant_cache: dict[tuple[str, str], list[tuple[str, str]]] = {}
         self._vessel_names: dict[str, dict[str, str]] | None = None
+        self._nations: dict[str, str] | None = None
+
+    def nation(self, item: dict[str, Any], *, infer_land: bool = False) -> str | None:
+        """Return Sea Power's nation identifier when the source identifies one."""
+        value = self.land_origin(item) if infer_land else str(item.get("country") or "")
+        key = norm(value)
+        if key in {"", "neutral", "neutrals", "unknown", "none"}:
+            return None
+        aliases = {"united states": "US", "usa": "US", "us": "US", "russia": "Soviet",
+                   "ussr": "Soviet", "soviet union": "Soviet", "united kingdom": "UK"}
+        if key in aliases:
+            return aliases[key]
+        if self._nations is None:
+            self._nations = {}
+            path = self.root / "language_en" / "nations.ini"
+            try:
+                contents = path.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                contents = ""
+            for identifier, label in re.findall(r"(?m)^([A-Za-z][A-Za-z0-9_]*)\s*=\s*([^\r\n#]+)", contents):
+                self._nations[norm(identifier)] = identifier
+                self._nations[norm(label)] = identifier
+        if self._nations:
+            return self._nations.get(key)
+        # Minimal installations and test fixtures may omit language files.
+        return str(value).strip().title().replace(" ", "_")
 
     def national_reference(self, item: dict[str, Any], definition: str, category: str) -> str | None:
         """Select an available national variant or squadron for a mapped unit."""
@@ -89,10 +116,13 @@ class Resolver:
         if isinstance(countries, list) and len(countries) == 1:
             return str(countries[0]).lower()
         attachments = item.get("aircraft") if isinstance(item.get("aircraft"), list) else []
-        attached_countries = [str(a.get("country") or "").lower() for a in attachments
-                              if isinstance(a, dict) and a.get("country")]
+        attached_countries = Counter(str(a.get("country") or "").lower() for a in attachments
+                                     if isinstance(a, dict) and a.get("country"))
         if attached_countries:
-            return max(set(attached_countries), key=attached_countries.count)
+            highest = max(attached_countries.values())
+            leaders = [country for country, count in attached_countries.items() if count == highest]
+            if len(leaders) == 1:
+                return leaders[0]
         return ""
     def conditional_candidates(self, item: dict[str, Any], category: str, name: str, cls: str) -> tuple[list[str], bool]:
         """Return candidates from declarative category/name/country rules."""
